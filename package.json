@@ -1,0 +1,23 @@
+{
+  "name": "nomi-krakow",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NOMI – przewodnik AI po Krakowie: agent tekstowy i głosowy, nawigacja piesza i komunikacją miejską, planer zwiedzania.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch-path=server server/index.js",
+    "test": "node --test test/*.test.js",
+    "check:llm": "node scripts/check-llm.js"
+  },
+  "engines": {
+    "node": ">=20.12"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.131.0",
+    "express": "^5.2.1",
+    "gtfs-realtime-bindings": "^2.2.0",
+    "yauzl": "^3.4.0"
+  }
+}

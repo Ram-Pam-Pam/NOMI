@@ -1,0 +1,397 @@
+// Narzędzia agenta NOMI: definicje (JSON Schema) + implementacje.
+import { attractionById } from "../data/attractions.js";
+import { TICKETS, recommendTicket } from "../data/tickets.js";
+import { angleDiff, relativeDirection } from "../geo.js";
+import { attractionsInView, nearbyAttractions, withGeometry } from "../services/attractions.js";
+import { resolvePlace, searchPlaces } from "../services/geocode.js";
+import { PLACE_TYPES, findPlaces } from "../services/places.js";
+import { planRoute, summarizeRoute } from "../services/routes.js";
+import { fmtClock } from "../time.js";
+import { nextDepartures } from "../transit/index.js";
+import { hasPosition } from "./context.js";
+
+const RYNEK = { lat: 50.0617, lon: 19.9373, name: "Rynek Główny" };
+const TAGS = ["history", "architecture", "art", "museums", "churches", "jewish", "views", "nature", "food", "nightlife", "kids", "ww2", "university"];
+
+export const TOOL_LABELS = {
+  find_attractions: { pl: "Szukam atrakcji", en: "Finding attractions" },
+  look_around: { pl: "Rozglądam się", en: "Looking around" },
+  find_places: { pl: "Szukam miejsc w okolicy", en: "Searching nearby places" },
+  plan_route: { pl: "Planuję trasę", en: "Planning the route" },
+  get_departures: { pl: "Sprawdzam odjazdy", en: "Checking departures" },
+  get_ticket_info: { pl: "Sprawdzam bilety", en: "Checking tickets" },
+  search_place: { pl: "Szukam miejsca", en: "Looking up the place" },
+  show_on_map: { pl: "Pokazuję na mapie", en: "Showing on the map" },
+  add_to_plan: { pl: "Dodaję do planu", en: "Adding to your plan" },
+};
+
+const point = {
+  type: "object",
+  properties: {
+    name: { type: "string" },
+    lat: { type: "number" },
+    lon: { type: "number" },
+    note: { type: "string", description: "Krótki opis (1 zdanie)." },
+  },
+  required: ["name", "lat", "lon"],
+  additionalProperties: false,
+};
+
+export const TOOLS = [
+  {
+    name: "find_attractions",
+    description:
+      "Atrakcje Krakowa z bazy NOMI (ze sprawdzonymi faktami do opowieści), posortowane według odległości od użytkownika lub wskazanego miejsca, z kierunkiem względem tego, gdzie patrzy użytkownik. Użyj, gdy pytanie dotyczy tego, co warto zobaczyć, albo potrzebujesz faktów, by opowiedzieć o miejscu. Podaj attraction_id, by dostać szczegóły jednej atrakcji.",
+    input_schema: {
+      type: "object",
+      properties: {
+        attraction_id: { type: "string", description: "Id atrakcji (np. z kontekstu) – zwraca jej pełne fakty." },
+        near: { type: "string", description: "Nazwa miejsca, wokół którego szukać (domyślnie pozycja użytkownika)." },
+        radius_m: { type: "integer", description: "Promień w metrach, domyślnie 800, maks. 20000." },
+        tag: { type: "string", enum: TAGS, description: "Filtr tematyczny." },
+        limit: { type: "integer", description: "Maks. liczba wyników (domyślnie 5)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "look_around",
+    description:
+      "Co jest w polu widzenia użytkownika – na podstawie GPS i kompasu (kierunku, w którym trzyma telefon). Zwraca atrakcje z bazy NOMI oraz obiekty z OpenStreetMap (zabytki, pomniki, muzea) w stożku przed użytkownikiem. Użyj przy pytaniach typu „co to za budynek?”, „co widzę przed sobą?”.",
+    input_schema: {
+      type: "object",
+      properties: {
+        max_distance_m: { type: "integer", description: "Zasięg w metrach (domyślnie 250)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "find_places",
+    description:
+      "Wyszukuje miejsca w OpenStreetMap w pobliżu użytkownika (lub wskazanego miejsca): restauracje, kawiarnie, bary, fast food, lody, piekarnie, apteki, bankomaty, toalety, biletomaty komunikacji miejskiej. Zwraca nazwy, odległości, kuchnię, godziny otwarcia (jeśli są w OSM), kierunek.",
+    input_schema: {
+      type: "object",
+      properties: {
+        type: { type: "string", enum: Object.keys(PLACE_TYPES), description: "Rodzaj miejsca." },
+        cuisine: { type: "string", description: "Filtr kuchni wg tagu OSM, np. polish, pizza, italian, vegan, sushi, burger, coffee_shop." },
+        name: { type: "string", description: "Fragment nazwy lokalu." },
+        near: { type: "string", description: "Nazwa miejsca, wokół którego szukać (domyślnie pozycja użytkownika)." },
+        radius_m: { type: "integer", description: "Promień w metrach, domyślnie 600, maks. 3000." },
+        limit: { type: "integer", description: "Maks. liczba wyników (domyślnie 6)." },
+      },
+      required: ["type"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "plan_route",
+    description:
+      "Planuje trasę z bieżącej pozycji (lub z origin) do celu: pieszo i komunikacją miejską (tramwaje, autobusy MPK/Mobilis) wg aktualnego rozkładu ZTP Kraków z opóźnieniami na żywo. Trasa automatycznie pojawia się na mapie w aplikacji z przyciskiem startu nawigacji. Zwraca warianty: godziny, linie, przystanki, polecany bilet.",
+    input_schema: {
+      type: "object",
+      properties: {
+        destination: { type: "string", description: "Cel: nazwa atrakcji, adres, przystanek lub miejsca." },
+        destination_lat: { type: "number", description: "Szerokość geograficzna celu, jeśli znana (np. z wyników innych narzędzi)." },
+        destination_lon: { type: "number", description: "Długość geograficzna celu, jeśli znana." },
+        origin: { type: "string", description: "Start, jeśli inny niż bieżąca pozycja użytkownika." },
+        mode: { type: "string", enum: ["auto", "walk", "transit"], description: "auto = wybierz najlepszy; transit = wymuś komunikację." },
+        depart_in_minutes: { type: "integer", description: "Wyjazd za X minut (domyślnie teraz)." },
+      },
+      required: ["destination"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_departures",
+    description:
+      "Najbliższe odjazdy tramwajów i autobusów z przystanku najbliższego użytkownikowi albo z przystanku o podanej nazwie – z opóźnieniami na żywo.",
+    input_schema: {
+      type: "object",
+      properties: {
+        stop_name: { type: "string", description: "Nazwa przystanku (domyślnie najbliższy użytkownikowi)." },
+        line: { type: "string", description: "Tylko wskazana linia." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_ticket_info",
+    description:
+      "Aktualny cennik biletów komunikacji miejskiej w Krakowie (ZTP/KMK), sposoby zakupu (biletomaty w pojazdach, aplikacje) i zasady. Podaj ride_minutes, by dostać rekomendację biletu.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ride_minutes: { type: "integer", description: "Planowany czas jazdy w minutach." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "search_place",
+    description: "Wyszukuje miejsce w Krakowie po nazwie lub adresie i zwraca współrzędne (atrakcje, przystanki, adresy z OSM).",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "show_on_map",
+    description: "Pokazuje użytkownikowi pinezki na mapie w aplikacji (np. polecane restauracje). Użyj, gdy polecasz kilka konkretnych miejsc.",
+    input_schema: {
+      type: "object",
+      properties: { places: { type: "array", items: point, description: "1–10 miejsc." } },
+      required: ["places"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "add_to_plan",
+    description: "Dodaje miejsce do planu zwiedzania użytkownika w zakładce Planer. Używaj tylko, gdy użytkownik o to prosi lub się zgodzi.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string" },
+        lat: { type: "number" },
+        lon: { type: "number" },
+        attraction_id: { type: "string" },
+        duration_min: { type: "integer", description: "Szacowany czas pobytu." },
+        note: { type: "string" },
+      },
+      required: ["name", "lat", "lon"],
+      additionalProperties: false,
+    },
+  },
+].map((t) => ({ ...t, eager_input_streaming: true }));
+
+// ------------------------------------------------------------------ walidacja
+
+function checkValue(schema, v) {
+  if (v === null || v === undefined) return false;
+  switch (schema.type) {
+    case "string":
+      return typeof v === "string" && (!schema.enum || schema.enum.includes(v));
+    case "number":
+      return typeof v === "number" && Number.isFinite(v);
+    case "integer":
+      return Number.isInteger(v);
+    case "boolean":
+      return typeof v === "boolean";
+    case "array":
+      return Array.isArray(v) && (!schema.items || v.every((x) => checkValue(schema.items, x)));
+    case "object":
+      return validateInput(schema, v) === null;
+    default:
+      return true;
+  }
+}
+
+/** Zwraca opis błędu albo null, gdy wejście pasuje do schematu. */
+export function validateInput(schema, input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return "wejście musi być obiektem";
+  for (const key of schema.required || []) if (input[key] === undefined) return `brak pola ${key}`;
+  for (const [key, value] of Object.entries(input)) {
+    const prop = schema.properties?.[key];
+    if (!prop) return `nieznane pole ${key}`;
+    if (!checkValue(prop, value)) return `niepoprawna wartość pola ${key}`;
+  }
+  return null;
+}
+
+// ------------------------------------------------------------------ implementacje
+
+async function originFor(near, ctx) {
+  if (near) {
+    const p = await resolvePlace(near);
+    if (!p) throw new Error(`Nie znaleziono miejsca „${near}”.`);
+    return { ...p, assumed: false };
+  }
+  if (hasPosition(ctx)) return { lat: ctx.lat, lon: ctx.lon, name: "pozycja użytkownika", assumed: false };
+  return { ...RYNEK, assumed: true };
+}
+
+const clamp = (v, min, max, def) => (Number.isFinite(v) ? Math.min(Math.max(v, min), max) : def);
+
+const handlers = {
+  async find_attractions(input, { ctx }) {
+    const lang = ctx.lang;
+    if (input.attraction_id) {
+      const a = attractionById.get(input.attraction_id);
+      if (!a) return { error: `Nie ma atrakcji o id ${input.attraction_id}` };
+      const base = hasPosition(ctx) ? withGeometry(a, ctx.lat, ctx.lon, ctx.heading, lang) : { id: a.id, name: a.name[lang] };
+      return { ...base, facts: a.facts, tips: a.tips, typical_visit_min: a.visitMin, district: a.district };
+    }
+    const origin = await originFor(input.near, ctx);
+    const list = nearbyAttractions({
+      lat: origin.lat,
+      lon: origin.lon,
+      heading: input.near ? null : ctx.heading,
+      radius: clamp(input.radius_m, 50, 20000, 800),
+      tag: input.tag,
+      limit: clamp(input.limit, 1, 12, 5),
+      lang,
+    });
+    return {
+      origin: origin.assumed ? "Rynek Główny (brak lokalizacji użytkownika – założenie)" : origin.name,
+      attractions: list.map((x, i) => (i < 3 ? { ...x, facts: attractionById.get(x.id).facts } : x)),
+    };
+  },
+
+  async look_around(input, { ctx }) {
+    if (!hasPosition(ctx)) return { error: "Brak lokalizacji użytkownika – poproś o włączenie GPS." };
+    const maxDistance = clamp(input.max_distance_m, 30, 600, 250);
+    const lang = ctx.lang;
+    if (ctx.heading === null) {
+      return {
+        note: "Brak danych z kompasu – pokazuję obiekty dookoła. Poproś użytkownika o włączenie kompasu, by wiedzieć, w którą stronę patrzy.",
+        around: nearbyAttractions({ lat: ctx.lat, lon: ctx.lon, radius: maxDistance + 200, limit: 5, lang }),
+      };
+    }
+    const curated = attractionsInView({ lat: ctx.lat, lon: ctx.lon, heading: ctx.heading, maxDistance: maxDistance + 150, lang });
+    let osm = [];
+    try {
+      const [attr, hist] = await Promise.all([
+        findPlaces({ type: "attraction", lat: ctx.lat, lon: ctx.lon, radius: maxDistance, limit: 40 }),
+        findPlaces({ type: "historic", lat: ctx.lat, lon: ctx.lon, radius: maxDistance, limit: 40 }),
+      ]);
+      const seen = new Set(curated.map((c) => c.name.toLowerCase()));
+      osm = [...attr, ...hist]
+        .filter((p) => p.distance < 20 || Math.abs(angleDiff(ctx.heading, p.bearing)) <= 35)
+        .filter((p) => !seen.has(p.name.toLowerCase()) && seen.add(p.name.toLowerCase()))
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, 6)
+        .map((p) => ({
+          name: p.name,
+          distance: p.distance,
+          direction: relativeDirection(ctx.heading, p.bearing, lang),
+          description: p.description,
+          source: "OpenStreetMap",
+        }));
+    } catch (err) {
+      osm = [{ error: `OpenStreetMap niedostępny: ${err.message}` }];
+    }
+    return {
+      heading: Math.round(ctx.heading),
+      in_view_curated: curated.map((c) => ({ ...c, facts: attractionById.get(c.id)?.facts })),
+      in_view_osm: osm,
+    };
+  },
+
+  async find_places(input, { ctx }) {
+    const origin = await originFor(input.near, ctx);
+    const places = await findPlaces({
+      type: input.type,
+      lat: origin.lat,
+      lon: origin.lon,
+      radius: clamp(input.radius_m, 50, 3000, 600),
+      limit: clamp(input.limit, 1, 15, 6),
+      cuisine: input.cuisine,
+      query: input.name,
+    });
+    const heading = input.near ? null : ctx.heading;
+    return {
+      origin: origin.assumed ? "Rynek Główny (brak lokalizacji użytkownika – założenie)" : origin.name,
+      source: "OpenStreetMap (dane społecznościowe – godziny otwarcia mogą być nieaktualne)",
+      places: places.map(({ id, type, ...p }) => ({ ...p, direction: relativeDirection(heading, p.bearing, ctx.lang) || undefined })),
+    };
+  },
+
+  async plan_route(input, { ctx, emit }) {
+    let to;
+    if (Number.isFinite(input.destination_lat) && Number.isFinite(input.destination_lon)) {
+      to = { lat: input.destination_lat, lon: input.destination_lon, name: input.destination };
+    } else {
+      const p = await resolvePlace(input.destination);
+      if (!p) return { error: `Nie znaleziono celu „${input.destination}”. Dopytaj użytkownika lub użyj search_place.` };
+      to = { lat: p.lat, lon: p.lon, name: p.name };
+    }
+    let from;
+    if (input.origin) {
+      const p = await resolvePlace(input.origin);
+      if (!p) return { error: `Nie znaleziono miejsca startu „${input.origin}”.` };
+      from = { lat: p.lat, lon: p.lon, name: p.name };
+    } else if (hasPosition(ctx)) {
+      from = { lat: ctx.lat, lon: ctx.lon, name: ctx.lang === "en" ? "Your location" : "Twoja pozycja" };
+    } else {
+      return { error: "Nie znam pozycji użytkownika. Zapytaj, skąd rusza, albo poproś o włączenie GPS." };
+    }
+    const departAt = Date.now() + clamp(input.depart_in_minutes, 0, 24 * 60, 0) * 60_000;
+    const route = await planRoute({ from, to, mode: input.mode || "auto", departAt, lang: ctx.lang });
+    emit("action", { type: "route", route });
+    return {
+      destination: to.name,
+      shown_on_map: true,
+      warning: route.warning,
+      options: summarizeRoute(route, ctx.lang),
+      note: "Pierwszy wariant jest zalecany. Użytkownik może wcisnąć „Start” na karcie trasy, by uruchomić nawigację głosową.",
+    };
+  },
+
+  async get_departures(input, { ctx }) {
+    if (!input.stop_name && !hasPosition(ctx)) return { error: "Podaj nazwę przystanku – nie znam pozycji użytkownika." };
+    const res = await nextDepartures({ lat: ctx.lat, lon: ctx.lon, stopName: input.stop_name, limit: 30 });
+    if (res.error) return res;
+    let deps = res.departures;
+    if (input.line) deps = deps.filter((d) => d.line === input.line);
+    return {
+      stops: res.stops,
+      departures: deps.slice(0, 10).map((d) => ({
+        line: d.line,
+        mode: d.mode,
+        direction: d.headsign,
+        stop: d.stop,
+        platform: d.platform,
+        scheduled: fmtClock(d.scheduled),
+        in_minutes: d.minutes,
+        delay_min: d.delay != null ? Math.round(d.delay / 60) : null,
+        distance_m: d.distance,
+      })),
+    };
+  },
+
+  async get_ticket_info(input, { ctx }) {
+    const lang = ctx.lang;
+    const L = (x) => x.label[lang] || x.label.pl;
+    return {
+      valid_from: TICKETS.validFrom,
+      source: TICKETS.source,
+      time_tickets: TICKETS.single.map((t) => ({ name: L(t), normal_pln: t.normal, reduced_pln: t.reduced })),
+      passes: TICKETS.passes.map((t) => ({ name: L(t), normal_pln: t.normal, reduced_pln: t.reduced })),
+      how_to_buy: TICKETS.howToBuy[lang],
+      notes: TICKETS.notes[lang],
+      recommendation: Number.isFinite(input.ride_minutes) ? recommendTicket(input.ride_minutes, lang) : undefined,
+    };
+  },
+
+  async search_place(input) {
+    return { results: await searchPlaces(input.query, { limit: 5 }) };
+  },
+
+  async show_on_map(input, { emit }) {
+    const places = input.places.slice(0, 10);
+    emit("action", { type: "markers", places });
+    return { shown: places.length };
+  },
+
+  async add_to_plan(input, { emit }) {
+    emit("action", { type: "plan_add", item: input });
+    return { added: input.name };
+  },
+};
+
+export async function runTool(name, input, toolCtx) {
+  const def = TOOLS.find((t) => t.name === name);
+  const handler = handlers[name];
+  if (!def || !handler) return { isError: true, content: `Nieznane narzędzie: ${name}` };
+  const problem = validateInput(def.input_schema, input);
+  if (problem) return { isError: true, content: JSON.stringify({ INVALID_INPUT: problem, received: input }) };
+  try {
+    const result = await handler(input, toolCtx);
+    return { isError: Boolean(result?.error), content: JSON.stringify(result) };
+  } catch (err) {
+    console.warn(`[tool ${name}]`, err.message);
+    return { isError: true, content: JSON.stringify({ error: err.message }) };
+  }
+}

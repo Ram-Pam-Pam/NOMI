@@ -1,0 +1,12 @@
+{
+  "name": "NOMI – przewodnik AI po Krakowie",
+  "short_name": "NOMI",
+  "description": "Agent AI dla turystów: rozmowa głosowa, nawigacja pieszo i komunikacją miejską, planer zwiedzania.",
+  "lang": "pl",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#f6f3ee",
+  "theme_color": "#c2412d",
+  "icons": [{ "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
