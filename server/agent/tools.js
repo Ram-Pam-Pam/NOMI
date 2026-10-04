@@ -4,6 +4,7 @@ import { TICKETS, recommendTicket } from "../data/tickets.js";
 import { angleDiff, relativeDirection } from "../geo.js";
 import { attractionsInView, nearbyAttractions, withGeometry } from "../services/attractions.js";
 import { resolvePlace, searchPlaces } from "../services/geocode.js";
+import { officialPublic, officialSourcesFor } from "../services/official.js";
 import { PLACE_TYPES, findPlaces } from "../services/places.js";
 import { planRoute, summarizeRoute } from "../services/routes.js";
 import { fmtClock } from "../time.js";
@@ -214,6 +215,23 @@ async function originFor(near, ctx) {
 
 const clamp = (v, min, max, def) => (Number.isFinite(v) ? Math.min(Math.max(v, min), max) : def);
 
+/** Oficjalne dane atrakcji (strona instytucji + portal krakow.travel); bez nich – jasna informacja, skąd wziąć. */
+function officialFor(a) {
+  const o = officialPublic(a.id);
+  if (o) {
+    const { id, name, fetchedAt, ...data } = o;
+    return { official: data, source_note: "Dane z oficjalnych stron (pole sources). Podając godziny lub ceny, wymień źródło." };
+  }
+  const urls = officialSourcesFor(a.id);
+  return {
+    official: null,
+    facts_unofficial: a.facts,
+    source_note: urls.length
+      ? `Oficjalne dane nie zostały jeszcze pobrane. Godzin i cen NIE podawaj – odeślij do oficjalnej strony: ${urls[0]}`
+      : "Obiekt ogólnodostępny (plac, ulica, pomnik) – bez biletów i godzin otwarcia.",
+  };
+}
+
 const handlers = {
   async find_attractions(input, { ctx }) {
     const lang = ctx.lang;
@@ -221,7 +239,7 @@ const handlers = {
       const a = attractionById.get(input.attraction_id);
       if (!a) return { error: `Nie ma atrakcji o id ${input.attraction_id}` };
       const base = hasPosition(ctx) ? withGeometry(a, ctx.lat, ctx.lon, ctx.heading, lang) : { id: a.id, name: a.name[lang] };
-      return { ...base, facts: a.facts, tips: a.tips, typical_visit_min: a.visitMin, district: a.district };
+      return { ...base, typical_visit_min: a.visitMin, district: a.district, ...officialFor(a) };
     }
     const origin = await originFor(input.near, ctx);
     const list = nearbyAttractions({
@@ -235,7 +253,12 @@ const handlers = {
     });
     return {
       origin: origin.assumed ? "Rynek Główny (brak lokalizacji użytkownika – założenie)" : origin.name,
-      attractions: list.map((x, i) => (i < 3 ? { ...x, facts: attractionById.get(x.id).facts } : x)),
+      attractions: list.map((x, i) => {
+        if (i >= 3) return x;
+        const o = officialPublic(x.id);
+        return o ? { ...x, summary: o.summary || x.summary, facts: o.facts, sources: o.sources } : x;
+      }),
+      note: "Godziny i ceny konkretnej atrakcji: find_attractions z attraction_id.",
     };
   },
 
@@ -249,7 +272,7 @@ const handlers = {
         around: nearbyAttractions({ lat: ctx.lat, lon: ctx.lon, radius: maxDistance + 200, limit: 5, lang }),
       };
     }
-    const curated = attractionsInView({ lat: ctx.lat, lon: ctx.lon, heading: ctx.heading, maxDistance: maxDistance + 150, lang });
+    const curated = attractionsInView({ lat: ctx.lat, lon: ctx.lon, heading: ctx.heading, maxDistance, lang });
     let osm = [];
     try {
       const [attr, hist] = await Promise.all([
@@ -274,27 +297,44 @@ const handlers = {
     }
     return {
       heading: Math.round(ctx.heading),
-      in_view_curated: curated.map((c) => ({ ...c, facts: attractionById.get(c.id)?.facts })),
+      in_view_curated: curated.map((c) => {
+        const o = officialPublic(c.id);
+        return o ? { ...c, facts: o.facts, sources: o.sources } : { ...c, facts_unofficial: attractionById.get(c.id)?.facts };
+      }),
       in_view_osm: osm,
     };
   },
 
   async find_places(input, { ctx }) {
     const origin = await originFor(input.near, ctx);
-    const places = await findPlaces({
-      type: input.type,
-      lat: origin.lat,
-      lon: origin.lon,
-      radius: clamp(input.radius_m, 50, 3000, 600),
-      limit: clamp(input.limit, 1, 15, 6),
-      cuisine: input.cuisine,
-      query: input.name,
-    });
+    let places;
+    try {
+      places = await findPlaces({
+        type: input.type,
+        lat: origin.lat,
+        lon: origin.lon,
+        radius: clamp(input.radius_m, 50, 3000, 600),
+        limit: clamp(input.limit, 1, 15, 6),
+        cuisine: input.cuisine,
+        query: input.name,
+      });
+    } catch (err) {
+      // Awaria usługi to nie to samo co „brak lokali” – model musi to odróżnić.
+      return {
+        error: `Usługa mapy OpenStreetMap jest chwilowo niedostępna (${err.message}). Nie mów, że w okolicy nie ma lokali – powiedz, że wyszukiwanie chwilowo nie działa, i zaproponuj ponowienie za chwilę.`,
+      };
+    }
     const heading = input.near ? null : ctx.heading;
     return {
       origin: origin.assumed ? "Rynek Główny (brak lokalizacji użytkownika – założenie)" : origin.name,
-      source: "OpenStreetMap (dane społecznościowe – godziny otwarcia mogą być nieaktualne)",
-      places: places.map(({ id, type, ...p }) => ({ ...p, direction: relativeDirection(heading, p.bearing, ctx.lang) || undefined })),
+      source: "OpenStreetMap – lokalizacja i rodzaj lokalu (nie ma oficjalnego rejestru lokali)",
+      note: "Godzin otwarcia ani cen lokali nie podawaj – nie pochodzą z oficjalnych źródeł. Jeśli lokal ma official_website, zaproponuj sprawdzenie godzin i menu na jego stronie.",
+      // Godziny z OSM (dane społecznościowe) celowo nie trafiają do agenta.
+      places: places.map(({ id, type, openingHours, website, ...p }) => ({
+        ...p,
+        official_website: website,
+        direction: relativeDirection(heading, p.bearing, ctx.lang) || undefined,
+      })),
     };
   },
 

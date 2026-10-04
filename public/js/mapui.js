@@ -1,45 +1,93 @@
-// Interfejs zakładki Mapa: wyszukiwarka, szybkie akcje, panel z trasami / odjazdami / lokalami.
+// Interfejs zakładki Mapa: wyszukiwarka, szybkie akcje, wysuwany panel z trasami i miejscami.
 import { getJSON } from "./api.js";
 import { MODE_EMOJI, PLACE_EMOJI, escapeHtml, fmtClock, fmtDistance, fmtMinutes } from "./format.js";
 import { t } from "./i18n.js";
-import { clearRoute, getMap, locate, showPlaces, showPoint, showRoute, toggleVehicles } from "./map.js";
+import { clearRoute, clearTransientMarkers, fitPoints, flyTo, locate, showPlaces, showPoint, showRoute, toggleAttractions } from "./map.js";
 import { rotateDemoHeading } from "./sensors.js";
 import { emit, on, state } from "./state.js";
 import { toast } from "./ui.js";
 
+const SHEET_MS = 340; // czas animacji panelu (jak w CSS)
 const sheet = () => document.getElementById("map-sheet");
 const body = () => document.getElementById("sheet-body");
 let current = null; // { route, selected, mode, to }
+let closeTimer = null;
+
+// ------------------------------------------------ panel (otwieranie / zamykanie z animacją)
 
 export function openSheet(html) {
+  const el = sheet();
+  clearTimeout(closeTimer);
   body().innerHTML = html;
-  sheet().classList.remove("hidden", "collapsed");
+  el.classList.remove("collapsed");
+  if (el.classList.contains("hidden")) {
+    el.classList.add("off");
+    el.classList.remove("hidden");
+    void el.offsetHeight; // wymuś przeliczenie, żeby animacja wjazdu ruszyła
+  }
+  el.classList.remove("off");
 }
 
 export function closeSheet() {
-  sheet().classList.add("hidden");
-  if (current && !state.nav) clearRoute();
+  const el = sheet();
+  el.classList.add("off");
+  clearTimeout(closeTimer);
+  closeTimer = setTimeout(() => el.classList.add("hidden"), SHEET_MS);
+  if (!state.nav) clearRoute();
+  clearTransientMarkers();
+  document.querySelectorAll("#map-chips .chip.place-on").forEach((c) => c.classList.remove("on", "place-on"));
   current = null;
 }
 
+/** Ile miejsca zajmuje panel – żeby trasa nie chowała się pod nim. */
+const sheetHeight = () => (sheet().classList.contains("hidden") ? 0 : sheet().getBoundingClientRect().height);
+
+function initSheetGestures() {
+  const grip = document.getElementById("sheet-grip");
+  let drag = null;
+  grip.addEventListener("pointerdown", (e) => {
+    drag = { y: e.clientY, dy: 0 };
+    sheet().style.transition = "none";
+    grip.setPointerCapture(e.pointerId);
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    drag.dy = Math.max(0, e.clientY - drag.y);
+    sheet().style.transform = `translateY(${drag.dy}px)`;
+  });
+  const end = () => {
+    if (!drag) return;
+    const { dy } = drag;
+    drag = null;
+    sheet().style.transition = "";
+    sheet().style.transform = "";
+    if (dy > 140) closeSheet();
+    else if (dy > 40) sheet().classList.add("collapsed");
+    else if (dy < 6) sheet().classList.toggle("collapsed");
+  };
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+}
+
+// ------------------------------------------------ inicjalizacja
+
 export function initMapUi() {
   document.getElementById("sheet-close").addEventListener("click", closeSheet);
-  document.getElementById("sheet-grip").addEventListener("click", () => sheet().classList.toggle("collapsed"));
   document.getElementById("btn-locate").addEventListener("click", locate);
+  initSheetGestures();
   initSearch();
 
   document.getElementById("map-chips").addEventListener("click", (e) => {
     const chip = e.target.closest("[data-action]");
     if (!chip) return;
     const a = chip.dataset.action;
-    if (a === "vehicles") {
-      const visible = toggleVehicles();
-      chip.classList.toggle("on", visible);
-      toast(visible ? t("vehiclesOn") : t("vehiclesOff"));
-    } else if (a === "departures") showDepartures();
-    else if (a === "food") showNearbyPlaces("restaurant");
-    else if (a === "cafe") showNearbyPlaces("cafe");
-    else showNearbyPlaces(a);
+    if (a === "attractions") {
+      chip.classList.toggle("on", toggleAttractions());
+      return;
+    }
+    document.querySelectorAll("#map-chips .chip.place-on").forEach((c) => c.classList.remove("on", "place-on"));
+    chip.classList.add("on", "place-on");
+    showNearbyPlaces(a);
   });
 
   // Tryb demo
@@ -52,15 +100,16 @@ export function initMapUi() {
     const el = e.target.closest("[data-sheet]");
     if (!el) return;
     const act = el.dataset.sheet;
-    if (act === "option") selectOption(Number(el.dataset.index));
+    if (act === "option") selectOption(Number(el.dataset.index), { compact: true });
+    if (act === "expand") expandOptions();
     if (act === "mode") requestRoute({ to: current.to, mode: el.dataset.mode });
     if (act === "start") {
       emit("nav-start", { route: current.route, index: current.selected });
-      closeSheet(); // trasa zostaje na mapie, bo nawigacja jest już aktywna
+      closeSheet(); // panel zjeżdża w dół, trasa zostaje (nawigacja jest aktywna)
     }
     if (act === "close") closeSheet();
     if (act === "navigate") requestRoute({ to: { lat: Number(el.dataset.lat), lon: Number(el.dataset.lon), name: el.dataset.name } });
-    if (act === "focus") getMap().setView([Number(el.dataset.lat), Number(el.dataset.lon)], 18);
+    if (act === "focus") flyTo(Number(el.dataset.lat), Number(el.dataset.lon), 17.5);
   });
 
   on("route-request", (r) => requestRoute(r));
@@ -158,11 +207,12 @@ export async function requestRoute({ to, mode = "auto" }) {
   }
 }
 
-/** Pokazuje gotową trasę (np. policzoną przez agenta). */
+/** Pokazuje gotową trasę (np. policzoną przez agenta): lista wariantów, pierwszy zaznaczony. */
 export function presentRoute(route, { mode = "auto", switchTab = true } = {}) {
   if (switchTab) emit("show-tab", "map");
   current = { to: route.to, mode, route, selected: route.recommended || 0 };
-  selectOption(current.selected);
+  renderRouteSheet();
+  selectOption(current.selected, { compact: route.options.length === 1 });
 }
 
 function legsLine(o) {
@@ -191,65 +241,76 @@ function legDetail(l) {
   </div></div>`;
 }
 
-function selectOption(i) {
+function renderRouteSheet() {
   const route = current.route;
-  current.selected = i;
-  const o = route.options[i];
-  showRoute(o);
   const modes = [
     ["auto", t("best")],
     ["walk", t("walk")],
     ["transit", t("transit")],
   ];
   openSheet(`
-    <h3>🏁 ${escapeHtml(route.to.name || "")}</h3>
-    <div class="segmented">${modes.map(([m, label]) => `<button type="button" data-sheet="mode" data-mode="${m}" class="${current.mode === m ? "on" : ""}">${label}</button>`).join("")}</div>
-    ${route.warning ? `<p class="muted small">⚠ ${escapeHtml(route.warning)}</p>` : ""}
-    ${route.options
-      .map(
-        (opt, idx) => `<button type="button" class="route-opt ${idx === i ? "selected" : ""}" data-sheet="option" data-index="${idx}">
-          <div class="top"><span class="dur">${fmtMinutes(opt.duration)}</span><span class="times">${fmtClock(opt.departure)} – ${fmtClock(opt.arrival)}</span></div>
-          <div class="legs-line">${legsLine(opt)}</div>
-          ${opt.ticket ? `<div class="ticket-line">🎟️ ${escapeHtml(opt.ticket.label)} – ${opt.ticket.price} zł</div>` : ""}
-        </button>`,
-      )
-      .join("")}
-    <div class="leg-detail">${o.legs.map(legDetail).join("")}</div>
-    <div class="sheet-actions">
-      <button class="btn primary block" type="button" data-sheet="start">▶ ${t("startNav")}</button>
+    <div class="route-sheet" id="route-sheet">
+      <h3>🏁 ${escapeHtml(route.to.name || "")}</h3>
+      <div class="segmented">${modes.map(([m, label]) => `<button type="button" data-sheet="mode" data-mode="${m}" class="${current.mode === m ? "on" : ""}">${label}</button>`).join("")}</div>
+      ${route.warning ? `<p class="muted small">⚠ ${escapeHtml(route.warning)}</p>` : ""}
+      <div class="opts">
+        ${route.options
+          .map(
+            (opt, idx) => `<div class="opt-wrap" data-index="${idx}"><div class="opt-inner">
+              <button type="button" class="route-opt" data-sheet="option" data-index="${idx}">
+                <div class="top"><span class="dur">${fmtMinutes(opt.duration)}</span><span class="times">${fmtClock(opt.departure)} – ${fmtClock(opt.arrival)}</span></div>
+                <div class="legs-line">${legsLine(opt)}</div>
+                ${opt.ticket ? `<div class="ticket-line">🎟️ ${escapeHtml(opt.ticket.label)} – ${opt.ticket.price} zł</div>` : ""}
+              </button></div></div>`,
+          )
+          .join("")}
+      </div>
+      ${route.options.length > 1 ? `<button type="button" class="link-btn more-opts" data-sheet="expand">↕ ${t("otherOptions")} (${route.options.length - 1})</button>` : ""}
+      <div class="collapsible closed" id="route-details"><div class="collapsible-inner"><div class="leg-detail"></div></div></div>
+      <div class="sheet-actions">
+        <button class="btn primary block" type="button" data-sheet="start">▶ ${t("startNav")}</button>
+      </div>
     </div>`);
 }
 
-// ------------------------------------------------ odjazdy
-
-export async function showDepartures() {
-  if (!state.position) return toast(t("noGps"));
-  openSheet(`<h3>🚏 ${t("departuresTitle")}</h3><div class="empty">…</div>`);
-  try {
-    const res = await getJSON("/api/departures", { lat: state.position.lat, lon: state.position.lon });
-    if (res.error) throw new Error(res.error);
-    const rows = res.departures
-      .map(
-        (d) => `<div class="dep-row"><span class="leg-badge ${d.mode}">${MODE_EMOJI[d.mode]} ${escapeHtml(d.line)}</span>
-          <div><b>${escapeHtml(d.headsign)}</b><div class="muted small">${escapeHtml(d.stop)}${d.platform ? ` (${escapeHtml(d.platform)})` : ""} · ${fmtClock(d.scheduled)} ${delayBadge(d.delay)}</div></div>
-          <div class="dep-min">${d.minutes <= 0 ? t("now") : `${d.minutes} ${t("minShort")}`}</div></div>`,
-      )
-      .join("");
-    openSheet(`<h3>🚏 ${escapeHtml(res.stops.join(", "))}</h3>${rows || `<div class="empty">${t("noDepartures")}</div>`}`);
-  } catch (err) {
-    openSheet(`<h3>🚏 ${t("departuresTitle")}</h3><div class="empty">${escapeHtml(err.message)}</div>`);
-  }
+/** Zaznacza wariant; w trybie compact pozostałe warianty płynnie się zwijają, a szczegóły rozwijają. */
+function selectOption(i, { compact = false } = {}) {
+  const box = document.getElementById("route-sheet");
+  if (!box || !current?.route) return;
+  current.selected = i;
+  const o = current.route.options[i];
+  box.querySelectorAll(".opt-wrap").forEach((w) => w.classList.toggle("is-selected", Number(w.dataset.index) === i));
+  box.querySelector(".leg-detail").innerHTML = o.legs.map(legDetail).join("");
+  box.classList.toggle("compact", compact);
+  document.getElementById("route-details").classList.toggle("closed", !compact);
+  showRoute(o, { fit: false });
+  // Dopasuj mapę po zakończeniu animacji panelu – wtedy znamy jego docelową wysokość.
+  setTimeout(() => fitRoute(o), SHEET_MS + 20);
 }
 
-// ------------------------------------------------ lokale w pobliżu
+function expandOptions() {
+  const box = document.getElementById("route-sheet");
+  box?.classList.remove("compact");
+  document.getElementById("route-details")?.classList.add("closed");
+  setTimeout(() => current?.route && fitRoute(current.route.options[current.selected]), SHEET_MS + 20);
+}
+
+function fitRoute(option) {
+  const pts = option.legs.flatMap((l) => l.geometry || []);
+  if (!pts.length) return;
+  fitPoints(pts, { bottom: sheetHeight() + 20, maxZoom: 16.5 });
+}
+
+// ------------------------------------------------ miejsca w pobliżu
+
+const NEAR_RADIUS = { restaurant: 500, tourist_info: 2000, toilets: 1200, ticket_machine: 1000, money: 800, pharmacy: 1500 };
 
 export async function showNearbyPlaces(type, center = state.position) {
   emit("show-tab", "map");
   if (!center) return toast(t("noGps"));
   openSheet(`<h3>${PLACE_EMOJI[type] || "📍"} ${t("placesTitle")}</h3><div class="empty">…</div>`);
   try {
-    const radius = ["toilets", "ticket_machine", "atm", "pharmacy"].includes(type) ? 1200 : 500;
-    const places = await getJSON("/api/places", { type, lat: center.lat, lon: center.lon, radius, limit: 25 });
+    const places = await getJSON("/api/places", { type, lat: center.lat, lon: center.lon, radius: NEAR_RADIUS[type] ?? 600, limit: 25 });
     showPlaces(places, type);
     renderPlaceList(places, type);
   } catch (err) {
@@ -263,11 +324,12 @@ export function renderPlaceList(places, type = "restaurant", title = t("placesTi
       (p) => `<div class="item">
         <div class="emoji">${PLACE_EMOJI[p.type || type] || "📍"}</div>
         <div><h4>${escapeHtml(p.name)}</h4>
-          <div class="meta">${[p.distance != null ? fmtDistance(p.distance) : null, p.cuisine, p.openingHours].filter(Boolean).map(escapeHtml).join(" · ")}</div>
+          <div class="meta">${[p.distance != null ? fmtDistance(p.distance) : null, p.kind, p.cuisine, p.openingHours ? `${t("osmHours")}: ${p.openingHours}` : null].filter(Boolean).map(escapeHtml).join(" · ")}</div>
           ${p.note ? `<p>${escapeHtml(p.note)}</p>` : ""}
           <div class="actions">
             <button class="btn small primary" data-sheet="navigate" data-lat="${p.lat}" data-lon="${p.lon}" data-name="${escapeHtml(p.name)}">🧭 ${t("navigate")}</button>
             <button class="btn small" data-sheet="focus" data-lat="${p.lat}" data-lon="${p.lon}">📍</button>
+            ${p.website ? `<a class="btn small" href="${escapeHtml(p.website)}" target="_blank" rel="noopener">www</a>` : ""}
           </div></div></div>`,
     )
     .join("");

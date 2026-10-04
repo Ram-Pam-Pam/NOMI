@@ -1,6 +1,9 @@
 // Backend zgodny z OpenAI (Sherlock) na atrapie serwera – bez sieci i bez klucza.
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import http from "node:http";
+import os from "node:os";
+import path from "node:path";
 import { after, before, test } from "node:test";
 
 const requests = [];
@@ -32,11 +35,25 @@ before(async () => {
     });
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  // Oficjalne dane atrakcji z dysku – tymczasowy katalog z jednym rekordem (bez sieci).
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nomi-test-"));
+  fs.mkdirSync(path.join(dataDir, "official"));
+  fs.writeFileSync(
+    path.join(dataDir, "official", "ogrod-botaniczny.json"),
+    JSON.stringify({
+      id: "ogrod-botaniczny", v: 2, name: "Ogród Botaniczny UJ", fetchedAt: Date.now(), hash: "x",
+      sources: ["https://ogrod.uj.edu.pl/zwiedzanie/podstawowe-info", "https://krakow.travel/197-krakow-ogrod-botaniczny"],
+      summary: "Najstarszy ogród botaniczny w Polsce.", facts: ["Założony w 1783 roku."],
+      opening_hours: [{ what: "Ogród", period: "październik", days: "codziennie", hours: "9:00–17:00" }],
+      closed: [], last_entry: "", prices: [{ ticket: "normalny", price: "22 zł" }], free_entry: "", booking: "", notes: [],
+    }),
+  );
   Object.assign(process.env, {
     NOMI_SKIP_DOTENV: "1",
     LLM_PROVIDER: "sherlock",
     LLM_API_KEY: "test-key",
     LLM_BASE_URL: `http://127.0.0.1:${server.address().port}/openai/v1`,
+    NOMI_DATA_DIR: dataDir,
     NOMI_CHAT_MODEL: "openai/gpt-oss-120b",
     NOMI_NARRATE_MODEL: "speakleash/Bielik-11B-v3.0-Instruct",
     NOMI_PLAN_MODEL: "openai/gpt-oss-20b", // inny model niż czat – odrzucenie parametru jest pamiętane per model
@@ -136,14 +153,17 @@ test("opowieść: model narratora (Bielik) w streamingu", async () => {
   assert.equal(c.text(), "Po twojej lewej stoi Barbakan.");
 });
 
-test("planer: JSON ze schematem, normalizacja pól", async () => {
+test("planer: JSON ze schematem, normalizacja pól, oficjalne dane przy punktach", async () => {
   const { makePlan } = await load();
+  const { loadOfficial } = await import("../server/services/official.js");
+  await loadOfficial();
   requests.length = 0;
   const plan = {
     title: "Królewski Kraków",
     summary: "Spacer",
     stops: [
       { name: "Wawel", attraction_id: "wawel-zamek", kind: "sight", lat: 50.0541, lon: 19.93545, start_time: "10:00", duration_min: 90, description: "Zamek", tip: "", getting_there: "Spacer" },
+      { name: "Ogród Botaniczny UJ", attraction_id: "ogrod-botaniczny", kind: "sight", lat: 50.063, lon: 19.956, start_time: "12:00", duration_min: 60, description: "", tip: "", getting_there: "" },
       { name: "Bez współrzędnych", kind: "sight" },
     ],
     tips: ["Wygodne buty"],
@@ -156,6 +176,66 @@ test("planer: JSON ze schematem, normalizacja pól", async () => {
   assert.equal(requests[0].body.response_format.type, "json_schema");
   assert.equal(requests[0].body.reasoning_effort, "medium");
   assert.equal(result.source, "ai");
-  assert.equal(result.stops.length, 1, "punkt bez współrzędnych odrzucony");
+  assert.equal(result.stops.length, 2, "punkt bez współrzędnych odrzucony");
+  const ogrod = result.stops.find((x) => x.attraction_id === "ogrod-botaniczny");
+  assert.equal(ogrod.official.prices[0].price, "22 zł", "oficjalne ceny dołączone przez serwer");
+  assert.ok(ogrod.official.sources[0].startsWith("https://ogrod.uj.edu.pl"));
+  assert.match(requests[0].body.messages[1].content, /ogrod-botaniczny .*oficjalnie: godziny: Ogród: październik codziennie 9:00–17:00/);
   assert.equal(result.stops[0].name, "Wawel");
+});
+
+test("opowieść trafia do historii – „chcę” odnosi się do pytania NOMI (regresja)", async () => {
+  const { narrate, chat, ctx } = await load();
+  const { attractionById } = await import("../server/data/attractions.js");
+  const { loadOfficial } = await import("../server/services/official.js");
+  await loadOfficial();
+  const signal = new AbortController().signal;
+  requests.length = 0;
+  replies = [
+    (b, res) => stream(res, [chunk({ content: "Przed tobą Ogród Botaniczny UJ, założony w 1783 roku. Chcesz, żebym sprawdził godziny otwarcia?" }, "stop")]),
+    (b, res) => stream(res, [chunk({ content: "Już sprawdzam godziny." }, "stop")]),
+  ];
+  await narrate({ attraction: attractionById.get("ogrod-botaniczny"), ctx, emit: () => {}, signal, sessionId: "s-narr" });
+  await chat({ sessionId: "s-narr", text: "chcę", ctx, emit: () => {}, signal });
+
+  const msgs = requests[1].body.messages; // system, zdarzenie, opowieść, „chcę”
+  assert.equal(msgs.length, 4);
+  assert.match(msgs[1].content, /<zdarzenie_aplikacji>.*Ogród Botaniczny UJ \[ogrod-botaniczny\]/s);
+  assert.match(msgs[1].content, /Oficjalne dane: godziny: Ogród: październik codziennie 9:00–17:00/, "oficjalne godziny w historii");
+  assert.match(msgs[1].content, /normalny 22 zł/);
+  assert.match(msgs[1].content, /ogrod.uj.edu.pl/, "źródło w historii");
+  assert.equal(msgs[2].role, "assistant");
+  assert.match(msgs[2].content, /godziny otwarcia\?$/);
+  assert.match(msgs[3].content, /chcę$/);
+});
+
+test("opowieść zakończona w trakcie odpowiedzi czatu jest dopisywana po niej (historia tylko dopisywana)", async () => {
+  const { narrate, chat, ctx } = await load();
+  const { attractionById } = await import("../server/data/attractions.js");
+  const signal = new AbortController().signal;
+  requests.length = 0;
+  replies = [
+    (b, res) => setTimeout(() => stream(res, [chunk({ content: "Odpowiedź na pytanie 1." }, "stop")]), 150),
+    (b, res) => stream(res, [chunk({ content: "Po prawej Barbakan." }, "stop")]),
+    (b, res) => stream(res, [chunk({ content: "Odpowiedź 2." }, "stop")]),
+  ];
+  const first = chat({ sessionId: "s-race", text: "pytanie 1", ctx, emit: () => {}, signal });
+  await new Promise((r) => setTimeout(r, 30));
+  await narrate({ attraction: attractionById.get("barbakan"), ctx, emit: () => {}, signal, sessionId: "s-race" });
+  await first;
+  await chat({ sessionId: "s-race", text: "pytanie 2", ctx, emit: () => {}, signal });
+
+  const msgs = requests[2].body.messages.slice(1); // bez promptu systemowego
+  const expected = [
+    ["user", /pytanie 1$/],
+    ["assistant", /^Odpowiedź na pytanie 1\.$/],
+    ["user", /^<zdarzenie_aplikacji>.*Barbakan/s],
+    ["assistant", /^Po prawej Barbakan\.$/],
+    ["user", /pytanie 2$/],
+  ];
+  assert.equal(msgs.length, expected.length);
+  expected.forEach(([role, re], i) => {
+    assert.equal(msgs[i].role, role, `wiadomość ${i}`);
+    assert.match(msgs[i].content, re, `wiadomość ${i}`);
+  });
 });

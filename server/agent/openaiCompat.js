@@ -306,17 +306,18 @@ function parseJsonLoose(raw) {
     const a = text.indexOf("{");
     const b = text.lastIndexOf("}");
     if (a >= 0 && b > a) return JSON.parse(text.slice(a, b + 1));
-    throw new AgentError("Model zwrócił plan w niepoprawnym formacie.");
+    throw new AgentError("Model zwrócił dane w niepoprawnym formacie JSON.");
   }
 }
 
-export async function runPlan({ request: userText, schema, signal }) {
+/** Odpowiedź w formacie JSON zgodnym ze schematem (planer, ekstrakcja danych z oficjalnych stron). */
+export async function runJson({ system = PLANNER_SYSTEM, request: userText, schema, signal }) {
   const model = cfg().planModel;
   const res = await request(
     {
       model,
       messages: [
-        { role: "system", content: `${PLANNER_SYSTEM}\n\nOdpowiedz wyłącznie obiektem JSON zgodnym z tym schematem:\n${JSON.stringify(schema)}` },
+        { role: "system", content: `${system}\n\nOdpowiedz wyłącznie obiektem JSON zgodnym z tym schematem:\n${JSON.stringify(schema)}` },
         { role: "user", content: userText },
       ],
       response_format: { type: "json_schema", json_schema: { name: "plan", schema, strict: true } },

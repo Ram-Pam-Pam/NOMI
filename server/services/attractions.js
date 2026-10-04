@@ -1,6 +1,7 @@
 // Zapytania o atrakcje względem pozycji i kierunku patrzenia użytkownika.
 import { ATTRACTIONS, CATEGORY_LABELS } from "../data/attractions.js";
 import { angleDiff, bearing, distance, relativeDirection } from "../geo.js";
+import { getOfficial } from "./official.js";
 
 export function withGeometry(a, lat, lon, heading, lang = "pl") {
   const d = distance(lat, lon, a.lat, a.lon);
@@ -15,7 +16,8 @@ export function withGeometry(a, lat, lon, heading, lang = "pl") {
     walkMinutes: Math.max(1, Math.round((d * 1.3) / 75)),
     bearing: Math.round(b),
     direction: relativeDirection(heading, b, lang),
-    summary: a.summary[lang] || a.summary.pl,
+    // Opis z oficjalnego portalu miasta, gdy pobrany; inaczej krótki opis z bazy NOMI.
+    summary: (lang === "pl" && getOfficial(a.id)?.summary) || a.summary[lang] || a.summary.pl,
   };
 }
 
@@ -28,8 +30,8 @@ export function nearbyAttractions({ lat, lon, heading = null, radius = 800, tag,
     .map(({ a }) => withGeometry(a, lat, lon, heading, lang));
 }
 
-/** Atrakcje w stożku widzenia (±fov/2 od kierunku patrzenia). */
-export function attractionsInView({ lat, lon, heading, fov = 70, maxDistance = 400, limit = 4, lang = "pl" }) {
+/** Atrakcje w stożku widzenia (±fov/2 od kierunku patrzenia) – ten sam sektor, który aplikacja rysuje na mapie. */
+export function attractionsInView({ lat, lon, heading, fov = 70, maxDistance = 250, limit = 4, lang = "pl" }) {
   if (heading == null) return [];
   return ATTRACTIONS.map((a) => ({ a, d: distance(lat, lon, a.lat, a.lon), b: bearing(lat, lon, a.lat, a.lon) }))
     .filter((x) => x.d <= maxDistance && (x.d < 25 || Math.abs(angleDiff(heading, x.b)) <= fov / 2))

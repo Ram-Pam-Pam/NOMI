@@ -2,6 +2,8 @@
 import { config } from "../config.js";
 import { ATTRACTIONS } from "../data/attractions.js";
 import { withGeometry } from "../services/attractions.js";
+import { getOfficial, officialText, setExtractor, withOfficial } from "../services/official.js";
+import { routePlan } from "../services/planRouting.js";
 import { simplePlan } from "../services/simplePlanner.js";
 import * as anthropic from "./anthropic.js";
 import { buildContextBlock, hasPosition } from "./context.js";
@@ -12,6 +14,9 @@ export { AgentError };
 
 const SESSION_TTL = 3 * 3600_000;
 const backend = () => (config.provider === "anthropic" ? anthropic : compat);
+
+// Ekstrakcja danych z oficjalnych stron korzysta z tego samego dostawcy AI.
+setExtractor((args) => backend().runJson(args));
 
 export function aiStatus() {
   const b = backend();
@@ -33,9 +38,15 @@ function getSession(id) {
   const now = Date.now();
   for (const [key, s] of sessions) if (now - s.at > SESSION_TTL && !s.busy) sessions.delete(key);
   let s = sessions.get(id);
-  if (!s) sessions.set(id, (s = { messages: [], busy: false, at: now }));
+  if (!s) sessions.set(id, (s = { messages: [], pending: [], busy: false, at: now }));
   s.at = now;
   return s;
+}
+
+/** Dopisuje wiadomości na koniec historii; w trakcie trwającej tury – po jej zakończeniu. */
+function appendToSession(session, msgs) {
+  if (session.busy) session.pending.push(...msgs);
+  else session.messages.push(...msgs);
 }
 
 export function resetSession(id) {
@@ -55,47 +66,99 @@ export async function chat({ sessionId, text, ctx, emit, signal }) {
     if (added) session.messages.push(...added);
   } finally {
     session.busy = false;
+    if (session.pending.length) session.messages.push(...session.pending.splice(0));
   }
 }
 
 // ------------------------------------------------------------------ opowieści o atrakcjach
 
+/** Fakty do opowieści: z oficjalnych źródeł; baza NOMI tylko awaryjnie (gdy strony były niedostępne). */
+function factsFor(a) {
+  const r = getOfficial(a.id);
+  if (r && (r.facts.length || r.summary)) return { facts: [r.summary, ...r.facts].filter(Boolean), source: r.sources.join(", "), official: true };
+  return { facts: [a.summary.pl, ...a.facts], source: "baza NOMI (oficjalne strony jeszcze niepobrane)", official: false };
+}
+
 function staticNarration(a, geo, lang) {
   const name = a.name[lang] || a.name.pl;
   const dir = geo?.direction ? `${geo.direction[0].toUpperCase()}${geo.direction.slice(1)}${lang === "en" ? ": " : " – "}` : "";
-  const facts = lang === "en" ? "" : ` ${a.facts.slice(0, 2).join(" ")}`;
-  return `${dir}${name}. ${a.summary[lang] || a.summary.pl}${facts}`;
+  if (lang === "en") return `${dir}${name}. ${a.summary.en}`;
+  const { facts } = factsFor(a);
+  return `${dir}${name}. ${facts.slice(0, 3).join(" ")}`;
 }
 
-export async function narrate({ attraction: a, ctx, emit, signal }) {
+/**
+ * Automatyczna opowieść jako para wiadomości w historii rozmowy – dzięki temu agent wie,
+ * co użytkownik usłyszał i o co NOMI zapytał (np. „Sprawdzić godziny?” → „chcę”).
+ * Dołączamy oficjalne godziny i ceny, żeby agent nie musiał ich zgadywać.
+ */
+function narrationTurn(a, text) {
+  const official = officialText(a.id, { facts: true });
+  return [
+    {
+      role: "user",
+      content:
+        `<zdarzenie_aplikacji>Użytkownik zbliżył się do atrakcji: ${a.name.pl} [${a.id}]. ` +
+        `Aplikacja poprosiła NOMI o krótką opowieść – poniżej to, co użytkownik usłyszał.\n` +
+        (official ? `Oficjalne dane: ${official}` : "Brak pobranych oficjalnych danych o godzinach i cenach.") +
+        `</zdarzenie_aplikacji>`,
+    },
+    { role: "assistant", content: text },
+  ];
+}
+
+// Gotowe początki wypowiedzi – modele potrafią pomylić stronę („Przed tobą, za twoimi plecami…”).
+const OPENERS_PL = {
+  "na wprost": "Przed tobą",
+  "lekko w prawo": "Przed tobą, lekko po prawej",
+  "lekko w lewo": "Przed tobą, lekko po lewej",
+  "po prawej": "Po twojej prawej",
+  "po lewej": "Po twojej lewej",
+  "z tyłu po prawej": "Za tobą, po prawej",
+  "z tyłu po lewej": "Za tobą, po lewej",
+  "za tobą": "Za twoimi plecami",
+};
+
+function openerFor(direction, lang) {
+  if (!direction) return null;
+  if (lang === "en") return direction[0].toUpperCase() + direction.slice(1);
+  return OPENERS_PL[direction] || null;
+}
+
+export async function narrate({ attraction: a, ctx, emit, signal, sessionId }) {
   const lang = ctx.lang;
   const geo = hasPosition(ctx) ? withGeometry(a, ctx.lat, ctx.lon, ctx.heading, lang) : null;
+  const opener = openerFor(geo?.direction, lang);
+  const { facts, source } = factsFor(a);
   const prompt = [
     buildContextBlock(ctx),
     `Turysta zbliża się do: ${a.name.pl} (${a.name.en}).`,
-    geo ? `Odległość: ${geo.distance} m. Kierunek względem użytkownika: ${geo.direction || "nieznany"}.` : "Odległość nieznana.",
-    `Fakty:\n- ${a.facts.join("\n- ")}`,
-    a.tips ? `Praktyczna wskazówka: ${a.tips}` : "",
+    geo ? `Odległość: ${geo.distance} m.` : "Odległość nieznana.",
+    opener
+      ? `Zacznij wypowiedź dokładnie od słów: „${opener}” – to kierunek wyliczony z kompasu, nie zmieniaj go.`
+      : "Kierunek względem użytkownika jest nieznany – nie wskazuj strony.",
+    `Fakty (źródło: ${source}) – opowiadaj tylko na ich podstawie:\n- ${facts.join("\n- ")}`,
     `Język wypowiedzi: ${lang === "en" ? "angielski" : "polski"}.`,
   ]
     .filter(Boolean)
     .join("\n\n");
 
-  let spoke = false;
+  let told = "";
   const tracked = (event, data) => {
-    if (event === "text" && data.delta) spoke = true;
+    if (event === "text" && data.delta) told += data.delta;
     emit(event, data);
   };
   try {
     const { refused } = await backend().runNarration({ prompt, emit: tracked, signal });
-    if (refused && !spoke) emit("text", { delta: staticNarration(a, geo, lang) });
+    if (refused && !told) tracked("text", { delta: staticNarration(a, geo, lang) });
   } catch (err) {
     if (signal?.aborted) throw err;
-    // Bez AI nadal opowiadamy – z bazy faktów.
+    // Bez AI nadal opowiadamy – z oficjalnych faktów.
     console.warn("[narrate] AI niedostępne, narracja statyczna:", describeError(err));
-    if (!spoke) emit("text", { delta: staticNarration(a, geo, lang) });
+    if (!told) tracked("text", { delta: staticNarration(a, geo, lang) });
     emit("notice", { message: describeError(err, lang) });
   }
+  if (sessionId && told.trim()) appendToSession(getSession(sessionId), narrationTurn(a, told.trim()));
 }
 
 // ------------------------------------------------------------------ planer zwiedzania
@@ -121,9 +184,8 @@ const PLAN_SCHEMA = {
           duration_min: { type: "integer" },
           description: { type: "string" },
           tip: { type: "string" },
-          getting_there: { type: "string" },
         },
-        required: ["name", "attraction_id", "kind", "lat", "lon", "start_time", "duration_min", "description", "tip", "getting_there"],
+        required: ["name", "attraction_id", "kind", "lat", "lon", "start_time", "duration_min", "description", "tip"],
         additionalProperties: false,
       },
     },
@@ -134,10 +196,15 @@ const PLAN_SCHEMA = {
 };
 
 function attractionCatalog() {
-  return ATTRACTIONS.map(
-    (a) =>
-      `${a.id} | ${a.name.pl} | ${a.lat.toFixed(5)},${a.lon.toFixed(5)} | ${a.district} | tagi: ${a.tags.join(",")} | ok. ${a.visitMin} min${a.tips ? ` | ${a.tips}` : ""}`,
-  ).join("\n");
+  return ATTRACTIONS.map((a) => {
+    const official = officialText(a.id, { sources: false, maxPrices: 3 });
+    const summary = getOfficial(a.id)?.summary;
+    return (
+      `${a.id} | ${a.name.pl} | ${a.lat.toFixed(5)},${a.lon.toFixed(5)} | ${a.district} | tagi: ${a.tags.join(",")} | ok. ${a.visitMin} min` +
+      ` | oficjalnie: ${official || "brak pobranych danych o godzinach i cenach"}` +
+      (summary ? ` | opis: ${summary}` : "")
+    );
+  }).join("\n");
 }
 
 /** Modele bez gwarancji schematu potrafią pominąć pola – wyrównujemy i odrzucamy punkty bez współrzędnych. */
@@ -155,7 +222,6 @@ function normalizePlan(plan) {
       duration_min: Math.round(Number(s.duration_min) || 30),
       description: str(s.description),
       tip: str(s.tip),
-      getting_there: str(s.getting_there),
     }));
   if (!stops.length) throw new AgentError("Model nie zwrócił żadnego punktu planu.");
   return {
@@ -168,24 +234,28 @@ function normalizePlan(plan) {
 
 export async function makePlan(prefs, signal) {
   const lang = prefs.lang === "en" ? "en" : "pl";
+  // Parametry routingu planu: prawdziwe trasy między punktami i przeliczony harmonogram.
+  const routing = { start: prefs.start, date: prefs.date, startTime: prefs.startTime, transport: prefs.transport, lang };
+  const weekday = new Intl.DateTimeFormat("pl-PL", { weekday: "long", timeZone: "Europe/Warsaw" }).format(new Date(`${prefs.date}T12:00:00`));
   const request = [
-    `Data: ${prefs.date}. Start o ${prefs.startTime}, czas na zwiedzanie: ${prefs.hours} h.`,
+    `Data: ${prefs.date} (${weekday}). Start o ${prefs.startTime}, czas na zwiedzanie: ${prefs.hours} h.`,
     `Start z: ${prefs.start.name} (${prefs.start.lat.toFixed(5)}, ${prefs.start.lon.toFixed(5)}).`,
     `Zainteresowania: ${prefs.interests.length ? prefs.interests.join(", ") : "ogólne zwiedzanie"}.`,
     `Tempo: ${prefs.pace}. Budżet: ${prefs.budget}. Poruszanie się: ${prefs.transport === "walk" ? "tylko pieszo" : "pieszo + tramwaje/autobusy"}.`,
     prefs.notes ? `Uwagi turysty: ${prefs.notes}` : "",
     `Język planu: ${lang === "en" ? "angielski" : "polski"}.`,
-    `\nDostępne atrakcje (id | nazwa | współrzędne | dzielnica | tagi | czas zwiedzania | uwagi):\n${attractionCatalog()}`,
+    `\nDostępne atrakcje (id | nazwa | współrzędne | dzielnica | tagi | czas zwiedzania | oficjalne godziny i ceny):\n${attractionCatalog()}`,
   ]
     .filter(Boolean)
     .join("\n");
 
   try {
-    const plan = await backend().runPlan({ request, schema: PLAN_SCHEMA, signal });
-    return { ...normalizePlan(plan), source: "ai" };
+    const plan = normalizePlan(await backend().runJson({ request, schema: PLAN_SCHEMA, signal }));
+    return { ...(await routePlan({ ...plan, stops: plan.stops.map(withOfficial) }, routing)), source: "ai" };
   } catch (err) {
     if (signal?.aborted) throw err;
     console.warn("[planner] AI niedostępne – plan uproszczony:", describeError(err));
-    return { ...simplePlan(prefs), source: "fallback", notice: describeError(err, lang) };
+    const plan = simplePlan(prefs);
+    return { ...(await routePlan({ ...plan, stops: plan.stops.map(withOfficial) }, routing)), source: "fallback", notice: describeError(err, lang) };
   }
 }

@@ -174,6 +174,7 @@ export function describeJourney(tt, raw, origin, dest, delays) {
       from: stops[0],
       to: stops[stops.length - 1],
       stops,
+      geometry: tt.legGeometry(t, leg.fromPos, leg.toPos),
       departure: tt.epochOf(dep),
       arrival: tt.epochOf(arr),
       duration: arr - dep,
@@ -182,7 +183,8 @@ export function describeJourney(tt, raw, origin, dest, delays) {
     clock = arr;
   }
 
-  // Scal sąsiednie odcinki piesze (np. przesiadka + dojście) – rzadkie, ale możliwe.
+  // Scal sąsiednie odcinki piesze (np. przesiadka + dojście) oraz kolejne kursy tej samej linii
+  // na tym samym przystanku (kurs kończy się i jedzie dalej pod innym numerem) – to nie jest przesiadka.
   const merged = [];
   for (const l of legs) {
     const last = merged[merged.length - 1];
@@ -190,6 +192,14 @@ export function describeJourney(tt, raw, origin, dest, delays) {
       last.to = l.to;
       last.duration += l.duration;
       last.arrival = l.arrival;
+    } else if (last && last.type === "transit" && l.type === "transit" && last.line === l.line && last.mode === l.mode && last.to.name === l.from.name) {
+      last.to = l.to;
+      last.headsign = l.headsign;
+      last.stops = [...last.stops, ...l.stops.slice(1)];
+      last.geometry = [...last.geometry, ...l.geometry.slice(1)];
+      last.arrival = l.arrival;
+      last.duration = Math.round((l.arrival - last.departure) / 1000);
+      last.delay = l.delay ?? last.delay;
     } else merged.push(l);
   }
 

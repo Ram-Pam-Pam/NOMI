@@ -44,7 +44,7 @@ export async function planRoute({ from, to, mode = "auto", departAt = Date.now()
         }),
       );
       for (const leg of j.legs) {
-        if (leg.type === "transit") leg.geometry = leg.stops.map((s) => [s.lat, s.lon]);
+        if (leg.type === "transit") leg.geometry ??= leg.stops.map((s) => [s.lat, s.lon]);
       }
       const rideMin = Math.ceil(j.transitSeconds / 60);
       j.ticket = recommendTicket(rideMin, lang);

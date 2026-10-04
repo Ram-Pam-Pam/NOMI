@@ -5,6 +5,7 @@ import { recommendTicket } from "../server/data/tickets.js";
 import { angleDiff, bearing, distance, relativeDirection } from "../server/geo.js";
 import { parseCsvLine, parseTime } from "../server/transit/gtfs.js";
 import { addDays, serviceDayEpoch } from "../server/time.js";
+import { htmlToText } from "../server/services/official.js";
 
 test("parser CSV obsługuje cudzysłowy i puste pola", () => {
   assert.deepEqual(parseCsvLine('a,"b, c","say ""hi""",,e'), ["a", "b, c", 'say "hi"', "", "e"]);
@@ -52,4 +53,13 @@ test("walidacja wejścia narzędzi", () => {
   const show = TOOLS.find((t) => t.name === "show_on_map").input_schema;
   assert.equal(validateInput(show, { places: [{ name: "A", lat: 50, lon: 19 }] }), null);
   assert.match(validateInput(show, { places: [{ name: "A", lat: "50", lon: 19 }] }), /places/);
+});
+
+test("HTML → tekst: encje, skrypty, menu i komórki tabel", () => {
+  const html = '<nav>Menu</nav><script>var x=1</script><h1>Barbakan</h1><p>Wt&ndash;nd 10:30&nbsp;&ndash; 18:00</p><table><tr><td>Normalny</td><td>22&nbsp;z&#322;</td></tr></table><p>G&ouml;rlitz &amp; Carcassonne</p>';
+  const text = htmlToText(html);
+  assert.ok(!text.includes("Menu") && !text.includes("var x"));
+  assert.match(text, /Wt–nd 10:30 – 18:00/);
+  assert.ok(text.includes("Normalny | 22 zł"), text);
+  assert.match(text, /Görlitz & Carcassonne/);
 });

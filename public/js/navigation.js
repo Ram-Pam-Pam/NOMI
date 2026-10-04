@@ -2,12 +2,12 @@
 import { getJSON } from "./api.js";
 import { MODE_EMOJI, angleDiff, bearing, distance, fmtClock, fmtDistance, fmtMinutes, pointAlong, projectOnLine, stepInstruction } from "./format.js";
 import { t } from "./i18n.js";
-import { clearRoute, setFollow, showRoute } from "./map.js";
+import { clearRoute, highlightLeg, setFollow, showRoute } from "./map.js";
 import { setDemoPosition } from "./sensors.js";
 import { emit, on, state } from "./state.js";
 import { showTicketReminder } from "./tickets.js";
 import { toast } from "./ui.js";
-import { speak } from "./voice.js";
+import { speak, stopSpeaking } from "./voice.js";
 
 let nav = null;
 let simTimer = null;
@@ -17,12 +17,35 @@ const leg = () => nav?.option.legs[nav.legIndex];
 const lower = (s) => (s ? s[0].toLowerCase() + s.slice(1) : s);
 const pt = (arr) => ({ lat: arr[0], lon: arr[1] });
 
+/** Komunikaty głosowe nawigacji – niezależne od czytania odpowiedzi czatu, z osobnym wyłącznikiem. */
+const say = (text, opts = {}) => {
+  if (state.settings.navVoice) speak(text, { ...opts, force: true });
+};
+
+function syncVoiceButton() {
+  const btn = $("nav-repeat");
+  btn.classList.toggle("muted", !state.settings.navVoice);
+  btn.setAttribute("aria-label", state.settings.navVoice ? t("navVoiceOff") : t("navVoiceOn"));
+  btn.title = btn.getAttribute("aria-label");
+  btn.innerHTML = state.settings.navVoice
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4Zm-2.5-8.8v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6Z"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 5V5L7 10H3Zm13.6 2 2.7-2.7-1.4-1.4-2.7 2.7-2.7-2.7-1.4 1.4 2.7 2.7-2.7 2.7 1.4 1.4 2.7-2.7 2.7 2.7 1.4-1.4-2.7-2.7Z"/></svg>';
+}
+
 export function initNavigation() {
   on("nav-start", ({ route, index }) => startNavigation(route, index));
   on("position", (pos) => nav && onPosition(pos));
   on("heading", () => nav && updateArrow());
   $("nav-stop").addEventListener("click", () => stopNavigation());
-  $("nav-repeat").addEventListener("click", () => speak(currentInstruction(), { force: true, interrupt: true }));
+  // Głośnik na banerze: wycisza/włącza komunikaty; po włączeniu od razu czyta bieżącą instrukcję.
+  $("nav-repeat").addEventListener("click", () => {
+    const on = !state.settings.navVoice;
+    emit("settings-patch", { navVoice: on });
+    if (on && nav) say(currentInstruction(), { interrupt: true });
+    if (!on) stopSpeaking();
+  });
+  on("settings", syncVoiceButton);
+  syncVoiceButton();
   $("demo-sim").addEventListener("click", () => (simTimer ? stopSimulation() : startSimulation()));
 }
 
@@ -45,26 +68,26 @@ export function startNavigation(route, index = 0) {
   };
   state.nav = nav;
   document.body.classList.add("navigating");
-  $("nav-banner").classList.remove("hidden");
+  $("nav-banner").classList.remove("off");
   showRoute(option);
   setFollow(true);
   enterLeg(0, { silent: true });
-  speak(`${t("navStarted")} ${currentInstruction()}`, { interrupt: true });
+  say(`${t("navStarted")} ${currentInstruction()}`, { interrupt: true });
   emit("nav-changed", nav);
-  setTimeout(() => emit("invalidate-map"), 50);
+  setTimeout(() => emit("invalidate-map"), 380);
 }
 
 export function stopNavigation({ arrived = false } = {}) {
   if (!nav) return;
   stopSimulation();
-  if (!arrived) speak(t("navEnded"));
+  if (!arrived) say(t("navEnded"));
   nav = null;
   state.nav = null;
   document.body.classList.remove("navigating");
-  $("nav-banner").classList.add("hidden");
+  $("nav-banner").classList.add("off");
   clearRoute();
   emit("nav-changed", null);
-  setTimeout(() => emit("invalidate-map"), 50);
+  setTimeout(() => emit("invalidate-map"), 380);
 }
 
 /** Skrót stanu nawigacji dla agenta AI. */
@@ -85,17 +108,18 @@ function enterLeg(i, { silent = false } = {}) {
   nav.announced = new Set();
   nav.offCount = 0;
   nav.walkProgress = null;
+  highlightLeg(i);
   const l = leg();
   if (l.type === "walk") {
     nav.phase = "walk";
     // Pozycje manewrów wzdłuż geometrii (do liczenia odległości do najbliższego skrętu).
     l.stepAlong ??= (l.steps || []).map((s) => projectOnLine(pt(s.location), l.geometry).along);
-    if (!silent) speak(currentInstruction());
+    if (!silent) say(currentInstruction());
     checkFacing();
   } else {
     nav.phase = "wait";
     l.stopAlong ??= l.stops.map((s) => projectOnLine(s, l.geometry).along);
-    if (!silent) speak(currentInstruction());
+    if (!silent) say(currentInstruction());
     maybeTicketReminder(i);
   }
   updateBanner();
@@ -113,7 +137,7 @@ function checkFacing() {
   if (!pos || state.heading === null) return;
   const target = walkTarget();
   if (!target || distance(pos, target) < 15) return;
-  if (Math.abs(angleDiff(state.heading, bearing(pos, target))) > 120) speak(t("turnAround"));
+  if (Math.abs(angleDiff(state.heading, bearing(pos, target))) > 120) say(t("turnAround"));
 }
 
 // ------------------------------------------------ aktualizacja pozycji
@@ -145,7 +169,7 @@ function handleWalk(pos, l) {
     const toTurn = l.stepAlong[k] - proj.along;
     if (toTurn <= 45 && !nav.announced.has(`step${k}`) && l.steps[k].type !== "arrive") {
       nav.announced.add(`step${k}`);
-      speak(`${state.settings.lang === "en" ? "In" : "Za"} ${fmtDistance(Math.max(10, toTurn))} ${lower(stepInstruction(l.steps[k]))}`);
+      say(`${state.settings.lang === "en" ? "In" : "Za"} ${fmtDistance(Math.max(10, toTurn))} ${lower(stepInstruction(l.steps[k]))}`);
     }
   }
 
@@ -205,7 +229,7 @@ function handleTransit(pos, l) {
   nav.stopsToGo = stopsToGo;
   if (stopsToGo === 1 && !nav.announced.has("getoff")) {
     nav.announced.add("getoff");
-    speak(`${t("nextStopGetOff")}: ${l.to.name}.`, { interrupt: true });
+    say(`${t("nextStopGetOff")}: ${l.to.name}.`, { interrupt: true });
     navigator.vibrate?.([200, 100, 200]);
   }
   if (distance(pos, l.to) < 70 && (speed < 2.5 || stopsToGo === 0)) {
@@ -240,7 +264,7 @@ function maybeTicketReminder(legIdx) {
 
 function arrive() {
   const name = nav.to?.name || "";
-  speak(`${t("navArrived")}${name ? `: ${name}` : ""}.`, { interrupt: true });
+  say(`${t("navArrived")}${name ? `: ${name}` : ""}.`, { interrupt: true });
   toast(`🏁 ${t("navArrived")}${name ? `: ${name}` : ""}`);
   const dest = nav.to;
   stopNavigation({ arrived: true });
@@ -251,7 +275,7 @@ async function reroute() {
   nav.lastReroute = Date.now();
   nav.offCount = 0;
   toast(t("rerouting"));
-  speak(t("rerouting"));
+  say(t("rerouting"));
   const to = nav.to;
   try {
     const route = await getJSON("/api/route", {

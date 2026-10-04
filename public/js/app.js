@@ -57,6 +57,7 @@ async function requestCompass() {
 function syncSettingsUi() {
   const s = state.settings;
   $("set-voice").checked = s.voice;
+  $("set-navvoice").checked = s.navVoice;
   $("set-conversation").checked = s.conversation;
   $("set-narrate").checked = s.narrate;
   $("set-tickets").checked = s.tickets;
@@ -83,6 +84,7 @@ function initSettings() {
   $("settings-close").addEventListener("click", () => dlg.close());
   const bind = (id, key) => $(id).addEventListener("change", (e) => saveSettings({ [key]: e.target.checked }));
   bind("set-voice", "voice");
+  bind("set-navvoice", "navVoice");
   bind("set-conversation", "conversation");
   bind("set-narrate", "narrate");
   bind("set-tickets", "tickets");

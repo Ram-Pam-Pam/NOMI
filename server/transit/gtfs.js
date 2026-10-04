@@ -177,6 +177,7 @@ class Builder {
     this.stopKey = new Map();
     this.stops = { id: [], name: [], code: [], platform: [], lat: [], lon: [], modes: [] };
     this.tripMetas = [];
+    this.shapes = []; // [{ rows: [seq, lat, lon, …] }]
   }
 
   serviceMask(calendar, exceptions, sid) {
@@ -235,12 +236,21 @@ class Builder {
 
       const maskCache = new Map();
       const trips = new Map();
+      const shapeIdx = new Map(); // shape_id → indeks w this.shapes (tylko kształty aktywnych kursów)
       for (const r of await readTable(zip, entries, "trips.txt")) {
         let mask = maskCache.get(r.service_id);
         if (mask === undefined) maskCache.set(r.service_id, (mask = this.serviceMask(calendar, exceptions, r.service_id)));
         if (!mask) continue;
         const route = routes.get(r.route_id) || { name: r.route_id, mode: MODE_BUS };
-        const meta = { feed, tripId: r.trip_id, line: route.name, mode: route.mode, headsign: r.trip_headsign, mask, rows: [] };
+        let shape = -1;
+        if (r.shape_id) {
+          if (!shapeIdx.has(r.shape_id)) {
+            shapeIdx.set(r.shape_id, this.shapes.length);
+            this.shapes.push({ rows: [] });
+          }
+          shape = shapeIdx.get(r.shape_id);
+        }
+        const meta = { feed, tripId: r.trip_id, line: route.name, mode: route.mode, headsign: r.trip_headsign, mask, shape, rows: [] };
         trips.set(r.trip_id, meta);
         this.tripMetas.push(meta);
       }
@@ -264,6 +274,17 @@ class Builder {
         if (c[col.drop_off_type] === "1") flags |= NO_DROPOFF;
         meta.rows.push(Number(c[col.stop_sequence]), stopIdx, Number.isNaN(arr) ? dep : arr, Number.isNaN(dep) ? arr : dep, flags);
       });
+
+      // Przebiegi linii (shapes.txt) – rzeczywisty kształt trasy tramwaju/autobusu na mapie.
+      await eachLine(zip, entries, "shapes.txt", (line, col) => {
+        let id;
+        if (col.shape_id === 0 && line.charCodeAt(0) !== 34) id = line.slice(0, line.indexOf(","));
+        if (id !== undefined && !shapeIdx.has(id)) return;
+        const c = parseCsvLine(line);
+        const s = shapeIdx.get(id ?? c[col.shape_id]);
+        if (s === undefined) return;
+        this.shapes[s].rows.push(Number(c[col.shape_pt_sequence]), Number(c[col.shape_pt_lat]), Number(c[col.shape_pt_lon]));
+      });
     } finally {
       zip.close();
     }
@@ -277,7 +298,7 @@ class Builder {
     const stopModes = Uint8Array.from(S.modes);
 
     // Instancje kursów (kurs × dzień) i spłaszczone przystanki kursów.
-    const trip = { line: [], mode: [], headsign: [], feed: [], rtId: [], off: [], len: [] };
+    const trip = { line: [], mode: [], headsign: [], feed: [], rtId: [], off: [], len: [], shape: [] };
     const tsStop = [];
     const tsArr = [];
     const tsDep = [];
@@ -309,6 +330,7 @@ class Builder {
         trip.rtId.push(meta.tripId);
         trip.off.push(tsStop.length);
         trip.len.push(len);
+        trip.shape.push(meta.shape);
         const rtKey = `${meta.feed}:${meta.tripId}`;
         if (!instancesByRt.has(rtKey)) instancesByRt.set(rtKey, []);
         instancesByRt.get(rtKey).push(t);
@@ -368,6 +390,27 @@ class Builder {
     }
     fpOff[nStops] = fpTo.length;
 
+    // Przebiegi linii spakowane do tablic (punkty posortowane wg shape_pt_sequence).
+    let nPts = 0;
+    for (const s of this.shapes) nPts += s.rows.length / 3;
+    const shapeLat = new Float64Array(nPts);
+    const shapeLon = new Float64Array(nPts);
+    const shapeOff = new Int32Array(this.shapes.length + 1);
+    let p = 0;
+    this.shapes.forEach((s, i) => {
+      shapeOff[i] = p;
+      const n = s.rows.length / 3;
+      const order = [...Array(n).keys()];
+      if (order.some((k) => k > 0 && s.rows[k * 3] < s.rows[(k - 1) * 3])) order.sort((a, b) => s.rows[a * 3] - s.rows[b * 3]);
+      for (const k of order) {
+        shapeLat[p] = s.rows[k * 3 + 1];
+        shapeLon[p] = s.rows[k * 3 + 2];
+        p++;
+      }
+      s.rows = null;
+    });
+    shapeOff[this.shapes.length] = p;
+
     // Grupy przystanków po nazwie (do wyszukiwania i odjazdów).
     const groups = new Map();
     for (let s = 0; s < nStops; s++) {
@@ -390,7 +433,9 @@ class Builder {
         rtId: trip.rtId,
         off: Int32Array.from(trip.off),
         len: Int32Array.from(trip.len),
+        shape: Int32Array.from(trip.shape),
       },
+      shapes: { lat: shapeLat, lon: shapeLon, off: shapeOff },
       ts: { stop: Int32Array.from(tsStop), arr: Int32Array.from(tsArr), dep: Int32Array.from(tsDep), flags: Uint8Array.from(tsFlags) },
       conn: { dep: cDep, arr: cArr, trip: cTrip, pos: cPos },
       footpaths: { off: fpOff, to: Int32Array.from(fpTo), sec: Int32Array.from(fpSec) },
@@ -405,6 +450,66 @@ export class Timetable {
   constructor(data) {
     Object.assign(this, data);
     this.builtAt = Date.now();
+    this.shapeMatchCache = new Map();
+  }
+
+  /**
+   * Geometria odcinka jazdy po rzeczywistym przebiegu linii (shapes.txt).
+   * Gdy kurs nie ma kształtu albo przystanków nie da się dopasować – łamana przez przystanki.
+   */
+  legGeometry(t, fromPos, toPos) {
+    const off = this.trips.off[t];
+    const stopPt = (k) => [this.stops.lat[this.ts.stop[off + k]], this.stops.lon[this.ts.stop[off + k]]];
+    const viaStops = [];
+    for (let k = fromPos; k <= toPos; k++) viaStops.push(stopPt(k));
+    const s = this.trips.shape[t];
+    if (s < 0) return viaStops;
+    const idx = this.#matchStopsToShape(t, s);
+    const a = idx[fromPos];
+    const b = idx[toPos];
+    if (a < 0 || b < 0 || b <= a) return viaStops;
+    const so = this.shapes.off[s];
+    const pts = [viaStops[0]];
+    for (let j = a; j <= b; j++) pts.push([this.shapes.lat[so + j], this.shapes.lon[so + j]]);
+    pts.push(viaStops[viaStops.length - 1]);
+    return pts;
+  }
+
+  /** Indeks punktu kształtu najbliższego każdemu przystankowi kursu (dopasowanie monotoniczne – działa dla pętli). */
+  #matchStopsToShape(t, s) {
+    const key = `${s}|${this.trips.rtId[t]}`;
+    const cached = this.shapeMatchCache.get(key);
+    if (cached) return cached;
+    const so = this.shapes.off[s];
+    const n = this.shapes.off[s + 1] - so;
+    const off = this.trips.off[t];
+    const len = this.trips.len[t];
+    const res = new Int32Array(len).fill(-1);
+    let prev = 0;
+    for (let k = 0; k < len; k++) {
+      const st = this.ts.stop[off + k];
+      const lat = this.stops.lat[st];
+      const lon = this.stops.lon[st];
+      const kx = Math.cos((lat * Math.PI) / 180) * 111320;
+      let best = -1;
+      let bestD = Infinity;
+      for (let j = prev; j < n; j++) {
+        const dx = (this.shapes.lon[so + j] - lon) * kx;
+        const dy = (this.shapes.lat[so + j] - lat) * 110540;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < bestD) {
+          bestD = d;
+          best = j;
+        } else if (bestD < 40 && d > bestD + 300) break; // minęliśmy przystanek – dalej szukać nie trzeba
+      }
+      if (bestD <= 150) {
+        res[k] = best;
+        prev = best;
+      }
+    }
+    if (this.shapeMatchCache.size > 5000) this.shapeMatchCache.clear();
+    this.shapeMatchCache.set(key, res);
+    return res;
   }
 
   get stats() {

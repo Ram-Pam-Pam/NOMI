@@ -1,6 +1,7 @@
 // Planer zapasowy (bez AI): zachłanny wybór najbliższych atrakcji pasujących do zainteresowań.
 import { ATTRACTIONS } from "../data/attractions.js";
 import { distance } from "../geo.js";
+import { getOfficial } from "./official.js";
 
 const PACE = { relaxed: 1.3, normal: 1, intense: 0.8 };
 const FOOD_AREAS = [
@@ -62,7 +63,6 @@ export function simplePlan(prefs) {
         duration_min: dur,
         description: lang === "en" ? "Time for Polish food: pierogi, żurek or a milk bar." : "Czas na polską kuchnię: pierogi, żurek albo bar mleczny.",
         tip: lang === "en" ? "Tap “Find restaurants” to see places nearby." : "Kliknij „Znajdź lokale”, by zobaczyć restauracje w pobliżu.",
-        getting_there: t.text,
       });
       clock += dur;
       pos = area;
@@ -94,9 +94,8 @@ export function simplePlan(prefs) {
       lon: a.lon,
       start_time: hhmm(clock),
       duration_min: dur,
-      description: a.summary[lang],
-      tip: a.tips || "",
-      getting_there: t.text,
+      description: (lang === "pl" && getOfficial(a.id)?.summary) || a.summary[lang],
+      tip: "",
     });
     clock += dur;
     pos = a;

@@ -39,6 +39,7 @@ export const store = {
 const DEFAULT_SETTINGS = {
   lang: (navigator.language || "pl").toLowerCase().startsWith("pl") ? "pl" : "en",
   voice: true,
+  navVoice: true, // komunikaty głosowe nawigacji (niezależnie od czytania odpowiedzi czatu)
   conversation: false,
   narrate: true,
   tickets: true,

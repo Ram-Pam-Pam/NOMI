@@ -9,6 +9,8 @@ import { sanitizeContext } from "./agent/context.js";
 import { ATTRACTIONS, CATEGORY_LABELS, attractionById } from "./data/attractions.js";
 import { TICKETS } from "./data/tickets.js";
 import { nearbyAttractions } from "./services/attractions.js";
+import { officialPublic, officialSourcesFor, startOfficialService, withOfficial } from "./services/official.js";
+import { routePlan } from "./services/planRouting.js";
 import { searchPlaces } from "./services/geocode.js";
 import { PLACE_TYPES, findPlaces } from "./services/places.js";
 import { planRoute } from "./services/routes.js";
@@ -71,8 +73,9 @@ app.get("/api/attractions", (req, res) => {
       radius: a.radius,
       visitMin: a.visitMin,
       district: a.district,
-      summary: a.summary[l],
-      tips: a.tips,
+      // Opis z oficjalnego portalu miasta (gdy pobrany); po angielsku – opis z bazy NOMI.
+      summary: (l === "pl" && officialPublic(a.id)?.summary) || a.summary[l],
+      official: Boolean(officialPublic(a.id)),
     })),
   );
 });
@@ -107,6 +110,13 @@ app.get("/api/search", async (req, res) => {
 });
 
 app.get("/api/tickets", (req, res) => res.json(TICKETS));
+
+// Oficjalne godziny, ceny i fakty atrakcji (ze stron instytucji i portalu krakow.travel).
+app.get("/api/official/:id", (req, res) => {
+  const id = String(req.params.id);
+  if (!attractionById.has(id)) return res.status(404).json({ error: "Nieznana atrakcja" });
+  res.json({ id, data: officialPublic(id), sources: officialSourcesFor(id) });
+});
 
 // ------------------------------------------------------------------ trasy i komunikacja
 
@@ -168,9 +178,10 @@ app.post("/api/narrate", async (req, res) => {
   const attraction = attractionById.get(String(req.body?.attractionId || ""));
   if (!attraction) return res.status(404).json({ error: "Nieznana atrakcja" });
   const ctx = sanitizeContext(req.body?.context);
+  const sessionId = String(req.body?.sessionId || "").slice(0, 80) || null;
   const { emit, signal } = openSse(req, res);
   try {
-    await narrate({ attraction, ctx, emit, signal });
+    await narrate({ attraction, ctx, emit, signal, sessionId });
     emit("done", {});
   } catch (err) {
     if (!signal.aborted) emit("error", { message: describeError(err, ctx.lang) });
@@ -206,6 +217,53 @@ app.post("/api/plan", async (req, res) => {
   }
 });
 
+// Przeliczenie tras i harmonogramu planu po ręcznych zmianach (dodanie, usunięcie, zmiana kolejności).
+app.post("/api/plan/route", async (req, res) => {
+  const b = req.body || {};
+  const hhmm = (v) => (/^\d{1,2}:\d{2}$/.test(v) ? v : null);
+  const text = (v, max) => String(v || "").slice(0, max);
+  const stops = (Array.isArray(b.stops) ? b.stops : [])
+    .slice(0, 15)
+    .filter((s) => num(s?.lat) !== null && num(s?.lon) !== null)
+    .map((s) =>
+      withOfficial({
+        uid: text(s.uid, 40),
+        name: text(s.name, 120),
+        attraction_id: attractionById.has(s.attraction_id) ? s.attraction_id : "",
+        kind: text(s.kind || "sight", 20),
+        lat: num(s.lat),
+        lon: num(s.lon),
+        start_time: "", // po edycji harmonogram wynika wyłącznie z tras
+        duration_min: Math.min(Math.max(Math.round(num(s.duration_min) ?? 30), 5), 480),
+        description: text(s.description, 600),
+        tip: text(s.tip, 400),
+        done: Boolean(s.done),
+      }),
+    );
+  if (!stops.length) return res.status(400).json({ error: "Plan nie ma punktów" });
+  const start =
+    b.start && num(b.start.lat) !== null && num(b.start.lon) !== null
+      ? { lat: num(b.start.lat), lon: num(b.start.lon), name: text(b.start.name || "Start", 80) }
+      : { lat: stops[0].lat, lon: stops[0].lon, name: stops[0].name };
+  const routed = await routePlan(
+    {
+      title: text(b.title, 120),
+      summary: text(b.summary, 400),
+      tips: (Array.isArray(b.tips) ? b.tips : []).slice(0, 6).map((x) => text(x, 300)),
+      source: b.source === "ai" ? "ai" : "manual",
+      stops,
+    },
+    {
+      start,
+      date: localYmd().replace(/(\d{4})(\d{2})(\d{2})/, "$1-$2-$3"),
+      startTime: hhmm(b.startTime) || "10:00",
+      transport: b.transport === "walk" ? "walk" : "mixed",
+      lang: lang(b.lang),
+    },
+  );
+  res.json(routed);
+});
+
 // ------------------------------------------------------------------ błędy
 
 app.use("/api", (req, res) => res.status(404).json({ error: "Nie znaleziono" }));
@@ -218,6 +276,7 @@ app.use((err, req, res, _next) => {
 // ------------------------------------------------------------------ start
 
 startTimetableService();
+startOfficialService({ canExtract: aiStatus().keyConfigured });
 
 const server = config.https
   ? https.createServer({ key: fs.readFileSync(config.https.key), cert: fs.readFileSync(config.https.cert) }, app)

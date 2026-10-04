@@ -44,7 +44,7 @@ export const config = {
   // Serwerowy fallback na inny model przy odmowie klasyfikatora bezpieczeństwa (wyłącz: NOMI_FALLBACKS=off).
   fallbacks: env.NOMI_FALLBACKS !== "off",
 
-  dataDir: path.join(ROOT, "data"),
+  dataDir: env.NOMI_DATA_DIR || path.join(ROOT, "data"),
   publicDir: path.join(ROOT, "public"),
   timezone: "Europe/Warsaw",
   userAgent: env.NOMI_USER_AGENT || "NOMI-Krakow-Guide/1.0 (tourist guide app)",

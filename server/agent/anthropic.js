@@ -146,21 +146,22 @@ export async function runNarration({ prompt, emit, signal }) {
   return { refused: msg.stop_reason === "refusal" };
 }
 
-export async function runPlan({ request, schema, signal }) {
+/** Odpowiedź w formacie JSON zgodnym ze schematem (planer, ekstrakcja danych z oficjalnych stron). */
+export async function runJson({ system = PLANNER_SYSTEM, request, schema, signal }) {
   const base = baseParams(config.planEffort);
   const stream = getClient().beta.messages.stream(
     {
       ...base,
       max_tokens: 64000,
-      system: [{ type: "text", text: PLANNER_SYSTEM }],
+      system: [{ type: "text", text: system }],
       output_config: { ...base.output_config, format: { type: "json_schema", schema } },
       messages: [{ role: "user", content: request }],
     },
     { signal },
   );
   const msg = await stream.finalMessage();
-  if (msg.stop_reason === "refusal") throw new AgentError("Planer odmówił przygotowania planu.");
+  if (msg.stop_reason === "refusal") throw new AgentError("Model odmówił odpowiedzi.");
   const textBlock = msg.content.find((b) => b.type === "text");
-  if (!textBlock) throw new AgentError("Planer nie zwrócił planu.");
+  if (!textBlock) throw new AgentError("Model nie zwrócił danych.");
   return JSON.parse(textBlock.text);
 }

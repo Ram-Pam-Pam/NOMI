@@ -7,8 +7,8 @@ Aplikacja webowa (PWA) dla turystów z agentem AI **NOMI** – tekstowym i głos
 | Zakładka | Co robi |
 |---|---|
 | **NOMI** (agent) | Czat z agentem AI (Sherlock CloudFerro: GPT-OSS + Bielik, albo Claude) – pisany lub mówiony (mikrofon, czytanie odpowiedzi na głos, tryb rozmowy bez rąk). Agent korzysta z narzędzi: trasy, odjazdy na żywo, restauracje i kawiarnie z OpenStreetMap, „co jest przede mną” (GPS + kompas), cennik biletów, pinezki na mapie, dodawanie do planu. |
-| **Mapa** | Pozycja ze stożkiem kierunku patrzenia, atrakcje, wyszukiwarka celu, warianty tras (pieszo / tramwaj / autobus) z opóźnieniami na żywo, odjazdy z najbliższego przystanku, tramwaje i autobusy na żywo, szybkie wyszukiwanie: jedzenie, kawa, biletomat, toaleta. |
-| **Planer** | Plan dnia układany przez AI wg zainteresowań, czasu i tempa (z przerwami na posiłki), oś czasu z nawigacją do kolejnych punktów; lista atrakcji w pobliżu. |
+| **Mapa** | MapLibre GL (tylko 2D) z wektorowymi mapami OpenFreeMap. Domyślnie bez znaczników – tylko twoja pozycja z promieniem patrzenia. Wyszukiwarka celu, warianty tras (pieszo / tramwaj / autobus) z opóźnieniami na żywo, rozróżnienie środków transportu na mapie. Szybkie przyciski: atrakcje, jedzenie, informacja turystyczna, toaleta, biletomat, bankomat/kantor, apteka. |
+| **Planer** | Trzy kroki: ile masz czasu → co lubisz → „Ułóż plan”. AI układa plan wg zainteresowań i **oficjalnych godzin otwarcia**, a serwer wyznacza **prawdziwe trasy między punktami** (pieszo po ulicach, dłuższe odcinki tramwajem/autobusem wg rozkładu ZTP) i przelicza godziny. Plan to oś trasy z odcinkami (kliknięcie = odcinek na mapie), rozwijanymi kartami miejsc (oficjalne godziny, ceny, źródło), zmianą kolejności i usuwaniem – po każdej zmianie trasy przeliczają się na nowo. |
 
 Działa w czasie rzeczywistym:
 - **Nawigacja krok po kroku** z komunikatami głosowymi („Za 40 m skręć w lewo”), strzałką wskazującą kierunek względem tego, gdzie patrzysz, wyznaczaniem nowej trasy po zboczeniu z obecnej oraz fazami „czekaj na tramwaj → jedziesz → wysiadasz na następnym”.
@@ -69,11 +69,13 @@ Sherlock udostępnia API zgodne z OpenAI; dane nie są używane do trenowania mo
 |---|---|---|
 | `PORT`, `HOST` | `3000`, `0.0.0.0` | |
 | `OSRM_FOOT_URL`, `OVERPASS_URL`, `NOMINATIM_URL` | publiczne instancje | Własne instancje do produkcji |
+| `OFFICIAL_TTL_HOURS` | `72` | Jak często odświeżać dane z oficjalnych stron |
+| `NOMI_DATA_DIR` | `data/` | Katalog na rozkłady GTFS i dane oficjalne |
 
 ## Architektura
 
 ```
-public/                 Frontend bez kroku budowania (ES modules + Leaflet)
+public/                 Frontend bez kroku budowania (ES modules + MapLibre GL)
   js/app.js             start, zakładki, ustawienia
   js/sensors.js         GPS (watchPosition) + kompas (DeviceOrientation, kompensacja pochylenia) + tryb demo
   js/agent.js           czat NOMI (SSE), mikrofon, karty akcji agenta
@@ -81,7 +83,7 @@ public/                 Frontend bez kroku budowania (ES modules + Leaflet)
   js/navigation.js      nawigacja w czasie rzeczywistym, zmiana trasy, fazy jazdy, symulacja
   js/tickets.js         przypomnienia o biletach, wykrywanie jazdy pojazdem
   js/proximity.js       automatyczne opowieści o atrakcjach w pobliżu
-  js/map.js, mapui.js   mapa, trasy, lokale, pojazdy na żywo, panel wariantów
+  js/map.js, mapui.js   mapa MapLibre (2D): warstwy tras i planu, znaczniki, panel wariantów tras
   js/planner.js         planer dnia
 server/
   index.js              Express: REST + strumienie SSE
@@ -93,7 +95,9 @@ server/
   transit/gtfs.js       pobieranie i parsowanie GTFS (A – autobusy MPK, M – Mobilis, T – tramwaje)
   transit/router.js     wyszukiwanie połączeń: Connection Scan Algorithm z przesiadkami pieszymi
   transit/realtime.js   GTFS-Realtime: pozycje pojazdów i opóźnienia
-  services/             trasy piesze (OSRM), lokale (Overpass), wyszukiwanie (Nominatim), planer zapasowy
+  services/             trasy piesze (OSRM), lokale (Overpass), wyszukiwanie (Nominatim), planer zapasowy,
+                        planRouting.js – trasy między punktami planu i przeliczony harmonogram,
+                        official.js – dane z oficjalnych stron
   data/attractions.js   45 atrakcji ze sprawdzonymi faktami (podstawa opowieści – mniej konfabulacji)
   data/tickets.js       taryfa ZTP od 2.03.2026
 ```
@@ -101,7 +105,19 @@ server/
 ### API serwera
 
 `GET /api/health` · `/api/attractions` · `/api/nearby` · `/api/places?type=restaurant&lat&lon` · `/api/search?q` · `/api/route?fromlat&fromlon&tolat&tolon&mode=auto|walk|transit` · `/api/departures?lat&lon|stop` · `/api/vehicles?bbox=s,w,n,e` · `/api/tickets`
-`POST /api/chat` (SSE) · `/api/narrate` (SSE) · `/api/plan` · `/api/chat/reset`
+`POST /api/chat` (SSE) · `/api/narrate` (SSE) · `/api/plan` (plan z trasami) · `/api/plan/route` (przeliczenie tras po edycji planu) · `/api/chat/reset` · `GET /api/official/:id`
+
+## Oficjalne źródła danych
+
+Godziny otwarcia, ceny biletów wstępu, zasady zwiedzania i fakty historyczne pochodzą wyłącznie z oficjalnych stron:
+
+- **instytucje zarządzające obiektami** – m.in. Muzeum Krakowa, Muzeum Narodowe w Krakowie, Zamek Królewski na Wawelu, Katedra Wawelska, Bazylika Mariacka, Muzeum UJ Collegium Maius, Ogród Botaniczny UJ, Kopiec Kościuszki, MOCAK, Manggha, Muzeum Lotnictwa Polskiego, Muzeum Archeologiczne, Sanktuarium na Skałce;
+- **oficjalny portal turystyczny Krakowa** [krakow.travel](https://krakow.travel) (prowadzony przez Krakowskie Biuro Festiwalowe na rzecz Gminy Miejskiej Kraków) – opisy i fakty;
+- **ZTP Kraków** – rozkłady jazdy, opóźnienia, ceny biletów komunikacji.
+
+Mapa źródeł jest w `server/data/officialSources.js`. Serwer pobiera strony, czyści HTML i za pomocą modelu AI wyciąga z nich wyłącznie to, co jest w ich treści (zakaz uzupełniania z wiedzy modelu); wynik z listą źródeł i datą pobrania trafia do `data/official/`. Dane są odświeżane w tle (co `OFFICIAL_TTL_HOURS`, domyślnie 72 h; model jest wywoływany tylko, gdy treść strony się zmieniła). Ręcznie: `npm run official:refresh` (`-- --force` – wszystko od nowa, `-- barbakan mariacki` – wybrane).
+
+NOMI podaje godziny i ceny tylko z tych danych i mówi, skąd pochodzą; jeśli ich brak – odsyła do oficjalnej strony. Lokale gastronomiczne nie mają oficjalnego rejestru – są wyszukiwane w OpenStreetMap, a NOMI zaznacza, że godziny warto potwierdzić na stronie lokalu.
 
 ## Testy
 
@@ -124,6 +140,8 @@ Testy działają offline na atrapach serwerów AI:
 
 - Rozkłady i dane na żywo: [GTFS ZTP Kraków](https://gtfs.ztp.krakow.pl) (feed autobusów MPK bywa chwilowo niedostępny w czasie prac serwisowych – wtedy routing działa na rozkładzie bez opóźnień).
 - Ceny biletów: [taryfa ZTP od 2 marca 2026](https://ztp.krakow.pl/wszystkie-aktualnosci/kmk/taryfa-biletowa-od-2-marca-wszystkie-dostepne-bilety.html), sposoby zakupu: [ZTP – Buy a KMK ticket](https://ztp.krakow.pl/en/kmk-public-transport/buy-a-kmk-ticket). Przed wdrożeniem zweryfikuj aktualność.
-- Mapa, lokale, trasy piesze, wyszukiwanie: OpenStreetMap (kafelki OSM, Overpass, OSRM, Nominatim). Publiczne instancje mają limity – przy ruchu produkcyjnym potrzebne własne lub komercyjne.
+- Mapa: MapLibre GL z wektorowymi kafelkami [OpenFreeMap](https://openfreemap.org) (bez klucza API; przy niedostępności – rastrowe kafelki OSM). Lokale, trasy piesze, wyszukiwanie: OpenStreetMap (Overpass, OSRM, Nominatim). Publiczne instancje mają limity – przy ruchu produkcyjnym potrzebne własne lub komercyjne.
 - Współrzędne atrakcji są przybliżone (±30 m) – można je doprecyzować w `server/data/attractions.js`.
 - Kompas w telefonach bywa niedokładny (zakłócenia magnetyczne); bez kompasu NOMI używa kierunku ruchu z GPS.
+- Głosowe komunikaty nawigacji można wyłączyć przyciskiem z głośnikiem na banerze nawigacji albo w ustawieniach (niezależnie od czytania odpowiedzi czatu).
+- Zmiana układu oficjalnej strony może zubożyć wyciągnięte dane – po `npm run official:refresh` warto przejrzeć wynik; niedostępne strony nie nadpisują ostatnich poprawnych danych.

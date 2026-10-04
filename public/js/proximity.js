@@ -5,7 +5,7 @@ import { buildContext } from "./context.js";
 import { angleDiff, bearing, distance } from "./format.js";
 import { t } from "./i18n.js";
 import { attractions } from "./map.js";
-import { emit, on, state, store } from "./state.js";
+import { emit, on, sessionId, state, store } from "./state.js";
 import { toast } from "./ui.js";
 import { flushSpeech, speakStream } from "./voice.js";
 
@@ -68,7 +68,7 @@ export async function narrate(id, { manual = false } = {}) {
   try {
     await streamSSE(
       "/api/narrate",
-      { attractionId: id, context: buildContext() },
+      { attractionId: id, sessionId: sessionId(), context: buildContext() },
       (event, data) => {
         if (event === "text") {
           msg.append(data.delta);
