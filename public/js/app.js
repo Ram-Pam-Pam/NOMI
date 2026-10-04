@@ -1,6 +1,7 @@
 // Start aplikacji NOMI.
 import { initAgent, refreshAgentTexts, resetChat } from "./agent.js";
-import { getJSON } from "./api.js";
+import { getJSON, postJSON } from "./api.js";
+import { distance } from "./format.js";
 import { applyI18n, t } from "./i18n.js";
 import { flag, icon } from "./icons.js";
 import { initMap, invalidate, loadAttractions, locate } from "./map.js";
@@ -52,6 +53,16 @@ async function requestCompass() {
   unlockSpeech();
   const ok = await enableCompass();
   if (!ok) toast(state.compassStatus === "denied" ? t("compassDenied") : t("compassUnsupported"));
+}
+
+// ------------------------------------------------ rozgrzewanie danych o okolicy
+
+// Serwer z wyprzedzeniem pobiera lokale i zabytki wokół użytkownika – pytania do NOMI nie czekają na mapę OSM.
+let lastWarm = null;
+function warmAround(pos) {
+  if (!pos || (lastWarm && distance(lastWarm, pos) < 400)) return;
+  lastWarm = { lat: pos.lat, lon: pos.lon };
+  postJSON("/api/warm", lastWarm).catch(() => {});
 }
 
 // ------------------------------------------------ język i motyw w górnym pasku
@@ -198,6 +209,7 @@ function init() {
   });
 
   on("gps-status", renderGps);
+  on("position", warmAround);
   on("compass-status", renderCompass);
   on("gps-error", (err) => {
     if (err.code === err.PERMISSION_DENIED && !state.settings.demo) toast(t("gpsDenied"), { timeout: 8000 });

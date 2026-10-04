@@ -78,7 +78,7 @@ export const TOOLS = [
   {
     name: "find_places",
     description:
-      "Wyszukuje miejsca w OpenStreetMap w pobliżu użytkownika (lub wskazanego miejsca): restauracje, kawiarnie, bary, fast food, lody, piekarnie, apteki, bankomaty, toalety, biletomaty komunikacji miejskiej. Zwraca nazwy, odległości, kuchnię, godziny otwarcia (jeśli są w OSM), kierunek.",
+      "Wyszukuje miejsca w OpenStreetMap w pobliżu użytkownika (lub wskazanego miejsca): restauracje, kawiarnie, bary, fast food, lody, piekarnie, apteki, bankomaty, toalety, biletomaty komunikacji miejskiej. Zwraca nazwy, odległości, kuchnię, kierunek. Zwykle wystarczy jedno wywołanie; gdy filtr nic nie zwróci, spróbuj raz bez filtra (kolejne wywołania w tej samej okolicy są natychmiastowe).",
     input_schema: {
       type: "object",
       properties: {
@@ -275,6 +275,34 @@ async function originFor(near, ctx) {
 
 const clamp = (v, min, max, def) => (Number.isFinite(v) ? Math.min(Math.max(v, min), max) : def);
 
+/**
+ * Limit czasu na wolną usługę zewnętrzną (Overpass): po ms zwracamy fallback, a zapytanie biegnie dalej
+ * i trafia do pamięci podręcznej – następne pytanie w tej okolicy jest już natychmiastowe.
+ */
+function withBudget(promise, ms, fallback) {
+  promise.catch(() => {});
+  return Promise.race([promise, new Promise((r) => setTimeout(() => r(fallback), ms))]);
+}
+const SLOW = Symbol("slow");
+
+// Rozgrzewanie pamięci miejsc: zapytanie do Overpass startuje równolegle z myśleniem modelu.
+const WARM = [
+  [/przede mn|przed sob|co widz|co to (jest|za)|naprzeciw|in front of me|what am i|what is (this|that)/i, ["attraction", "historic"], 250],
+  [/zje|jedzen|obiad|kolacj|śniadan|restaura|pierog|knajp|eat|food|lunch|dinner|restaurant/i, ["restaurant"], 600],
+  [/kaw[aęy]|kawiarn|coffee|caf[eé]/i, ["cafe"], 600],
+];
+
+/** Uruchamia w tle pobranie miejsc, których pytanie najpewniej będzie potrzebować (bez czekania na wynik). */
+export function warmPlaces(text, ctx) {
+  if (!hasPosition(ctx)) return;
+  for (const [re, types, radius] of WARM) {
+    if (!re.test(String(text))) continue;
+    for (const type of types) findPlaces({ type, lat: ctx.lat, lon: ctx.lon, radius, limit: 1 }).catch(() => {});
+  }
+}
+// Azymuty w stopniach nie są dla turysty – zostaje kierunek słowny (direction).
+const noBearing = ({ bearing, ...rest }) => rest;
+
 const ZTP_SOURCE = { title: "Rozkłady jazdy i opóźnienia na żywo (GTFS ZTP Kraków)", url: "https://ztp.krakow.pl", source: "ZTP Kraków" };
 const OSM_SOURCE = { title: "OpenStreetMap – lokalizacja, rodzaj lokalu, trasy piesze", url: "https://www.openstreetmap.org", source: "OpenStreetMap (dane społecznościowe)" };
 
@@ -306,7 +334,7 @@ const handlers = {
     if (input.attraction_id) {
       const a = attractionById.get(input.attraction_id);
       if (!a) return { error: `Nie ma atrakcji o id ${input.attraction_id}` };
-      const base = hasPosition(ctx) ? withGeometry(a, ctx.lat, ctx.lon, ctx.heading, lang) : { id: a.id, name: a.name[lang] };
+      const base = hasPosition(ctx) ? noBearing(withGeometry(a, ctx.lat, ctx.lon, ctx.heading, lang)) : { id: a.id, name: a.name[lang] };
       const official = officialFor(a);
       useOfficial(citations, officialPublic(a.id), [a.name[lang] || a.name.pl, a.name.pl, a.name.en]);
       // Bez pobranych danych strukturalnych – fragmenty oficjalnych stron tej atrakcji z bazy wiedzy.
@@ -329,7 +357,7 @@ const handlers = {
     });
     return {
       origin: origin.assumed ? "Rynek Główny (brak lokalizacji użytkownika – założenie)" : origin.name,
-      attractions: list.map((x, i) => {
+      attractions: list.map(noBearing).map((x, i) => {
         if (i >= 3) return x;
         const o = officialPublic(x.id);
         if (o) useOfficial(citations, o, [x.name]);
@@ -346,16 +374,22 @@ const handlers = {
     if (ctx.heading === null) {
       return {
         note: "Brak danych z kompasu – pokazuję obiekty dookoła. Poproś użytkownika o włączenie kompasu, by wiedzieć, w którą stronę patrzy.",
-        around: nearbyAttractions({ lat: ctx.lat, lon: ctx.lon, radius: maxDistance + 200, limit: 5, lang }),
+        around: nearbyAttractions({ lat: ctx.lat, lon: ctx.lon, radius: maxDistance + 200, limit: 5, lang }).map(noBearing),
       };
     }
     const curated = attractionsInView({ lat: ctx.lat, lon: ctx.lon, heading: ctx.heading, maxDistance, lang });
     let osm = [];
     try {
-      const [attr, hist] = await Promise.all([
-        findPlaces({ type: "attraction", lat: ctx.lat, lon: ctx.lon, radius: maxDistance, limit: 40 }),
-        findPlaces({ type: "historic", lat: ctx.lat, lon: ctx.lon, radius: maxDistance, limit: 40 }),
-      ]);
+      const both = await withBudget(
+        Promise.all([
+          findPlaces({ type: "attraction", lat: ctx.lat, lon: ctx.lon, radius: maxDistance, limit: 40 }),
+          findPlaces({ type: "historic", lat: ctx.lat, lon: ctx.lon, radius: maxDistance, limit: 40 }),
+        ]),
+        4500,
+        SLOW,
+      );
+      if (both === SLOW) throw new Error("mapa OSM odpowiada zbyt wolno");
+      const [attr, hist] = both;
       const seen = new Set(curated.map((c) => c.name.toLowerCase()));
       osm = [...attr, ...hist]
         .filter((p) => p.distance < 20 || Math.abs(angleDiff(ctx.heading, p.bearing)) <= 35)
@@ -382,7 +416,7 @@ const handlers = {
     }
     return {
       heading: Math.round(ctx.heading),
-      in_view_curated: curated.map((c) => {
+      in_view_curated: curated.map(noBearing).map((c) => {
         const o = officialPublic(c.id);
         if (o) useOfficial(citations, o, [c.name]);
         return o ? { ...c, facts: o.facts, sources: o.sources } : { ...c, facts_unofficial: attractionById.get(c.id)?.facts };
@@ -395,16 +429,26 @@ const handlers = {
     const origin = await originFor(input.near, ctx);
     let places;
     try {
-      places = await findPlaces({
-        type: input.type,
-        lat: origin.lat,
-        lon: origin.lon,
-        radius: clamp(input.radius_m, 50, 3000, 600),
-        limit: clamp(input.limit, 1, 15, 6),
-        cuisine: input.cuisine,
-        query: input.name,
-        diet: input.diet,
-      });
+      places = await withBudget(
+        findPlaces({
+          type: input.type,
+          lat: origin.lat,
+          lon: origin.lon,
+          radius: clamp(input.radius_m, 50, 3000, 600),
+          limit: clamp(input.limit, 1, 15, 6),
+          cuisine: input.cuisine,
+          query: input.name,
+          diet: input.diet,
+        }),
+        12000,
+        SLOW,
+      );
+      if (places === SLOW) {
+        return {
+          error:
+            "Lokale z mapy OpenStreetMap jeszcze się wczytują (serwer mapy odpowiada teraz wolno). Powiedz krótko, że lista lokali będzie gotowa za kilkanaście sekund, i zaproponuj, by zapytać jeszcze raz. Nie mów, że w okolicy nie ma lokali.",
+        };
+      }
     } catch (err) {
       // Awaria usługi to nie to samo co „brak lokali” – model musi to odróżnić.
       return {
@@ -421,10 +465,10 @@ const handlers = {
       source: "OpenStreetMap – lokalizacja i rodzaj lokalu (nie ma oficjalnego rejestru lokali)",
       note: "Godzin otwarcia ani cen lokali nie podawaj – nie pochodzą z oficjalnych źródeł. Jeśli lokal ma official_website, zaproponuj sprawdzenie godzin i menu na jego stronie.",
       // Godziny z OSM (dane społecznościowe) celowo nie trafiają do agenta.
-      places: places.map(({ id, type, openingHours, website, ...p }) => ({
+      places: places.map(({ id, type, openingHours, website, bearing, ...p }) => ({
         ...p,
         official_website: website,
-        direction: relativeDirection(heading, p.bearing, ctx.lang) || undefined,
+        direction: relativeDirection(heading, bearing, ctx.lang) || undefined,
       })),
     };
   },

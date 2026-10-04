@@ -60,6 +60,7 @@ before(async () => {
   Object.assign(process.env, {
     NOMI_SKIP_DOTENV: "1",
     NOMI_VERIFY: "off", // włączane w testach weryfikacji
+    OVERPASS_URL: "http://127.0.0.1:9/", // bez sieci: rozgrzewanie miejsc od razu dostaje odmowę połączenia
     LLM_PROVIDER: "sherlock",
     LLM_API_KEY: "test-key",
     LLM_BASE_URL: `http://127.0.0.1:${server.address().port}/openai/v1`,
@@ -81,7 +82,8 @@ async function load() {
 function collector() {
   const events = [];
   const emit = (type, data) => events.push({ type, data });
-  const text = () => events.filter((e) => e.type === "text").map((e) => e.data.delta).join("");
+  // Gotowa odpowiedź (zdarzenie "answer"); tekst modelu nie jest przesyłany w trakcie pisania.
+  const text = () => events.findLast((e) => e.type === "answer")?.data.text ?? "";
   return { events, emit, text };
 }
 
@@ -326,8 +328,10 @@ test("weryfikacja: niepoparte twierdzenia poprawione w dowodach, poprawiona wers
     assert.doesNotMatch(prompt, /🎟/, "emoji usunięte przed sprawdzeniem");
 
     const types = c.events.map((e) => e.type);
-    assert.ok(types.indexOf("verifying") < types.indexOf("verified"));
-    const verified = c.events.find((e) => e.type === "verified").data;
+    assert.ok(types.indexOf("verifying") < types.indexOf("answer"));
+    assert.ok(!types.includes("text"), "szkic nie trafia do aplikacji – najpierw sprawdzenie, potem odpowiedź");
+    assert.ok(types.indexOf("action") < types.indexOf("answer"), "źródła przed odpowiedzią");
+    const verified = c.events.find((e) => e.type === "answer").data;
     assert.equal(verified.status, "corrected");
     assert.equal(verified.text, corrected);
     const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
@@ -348,7 +352,7 @@ test("weryfikacja: awaria weryfikatora → odpowiedź oznaczona jako niesprawdzo
     replies = [(b, res) => stream(res, [chunk({ content: "Kopiec Kościuszki usypano w latach 1820–1823 na wzgórzu Sikornik [K1]." }, "stop")])];
     const c = collector();
     await chat({ sessionId: "s-verify-fail", text: "Kiedy usypano Kopiec Kościuszki?", ctx, emit: c.emit, signal: new AbortController().signal });
-    assert.equal(c.events.find((e) => e.type === "verified").data.status, "unverified");
+    assert.equal(c.events.find((e) => e.type === "answer").data.status, "unverified");
     assert.match(c.text(), /1820–1823/);
   }));
 
@@ -365,7 +369,7 @@ test("weryfikacja opowieści: fakty atrakcji jako dowody, źródła – oficjaln
     await narrate({ attraction: attractionById.get("ogrod-botaniczny"), ctx, emit: c.emit, signal: new AbortController().signal, sessionId: "s-story", onRoute: true });
     assert.match(requests[0].body.messages.at(-1).content, /NIE zadawaj pytania na końcu/, "ciekawostka po drodze – bez pytania");
     assert.match(requests[1].body.messages.at(-1).content, /Założony w 1783 roku/);
-    assert.equal(c.events.find((e) => e.type === "verified").data.status, "ok");
+    assert.equal(c.events.find((e) => e.type === "answer").data.status, "ok");
     const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources").data.sources;
     assert.ok(sources.some((s) => s.url.startsWith("https://ogrod.uj.edu.pl")));
   }));
@@ -388,3 +392,38 @@ test("weryfikacja: źródła z dowodów wskazanych przez weryfikator, gdy model 
     const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
     assert.deepEqual(sources?.map((s) => s.url), ["https://krakow.travel/17793-krakow-kopiec-kosciuszki"]);
   }));
+
+test("odpowiedź bez dziur: tekst przed narzędziem („Już sprawdzam…”) nie trafia do gotowej odpowiedzi", async () => {
+  const { chat, ctx } = await load();
+  requests.length = 0;
+  replies = [
+    (b, res) =>
+      stream(res, [
+        chunk({ content: "Już sprawdzam bilety…" }),
+        chunk({ tool_calls: [{ index: 0, id: "call_t", type: "function", function: { name: "get_ticket_info", arguments: '{"ride_minutes": 15}' } }] }, "tool_calls"),
+      ]),
+    (b, res) => stream(res, [chunk({ content: "Na 15 minut wystarczy bilet 20-minutowy za 4 zł." }, "stop")]),
+  ];
+  const c = collector();
+  await chat({ sessionId: "s-holes", text: "Jaki bilet na 15 minut?", ctx, emit: c.emit, signal: new AbortController().signal });
+  assert.equal(c.text(), "Na 15 minut wystarczy bilet 20-minutowy za 4 zł.");
+  assert.equal(c.events.filter((e) => e.type === "answer").length, 1, "dokładnie jedna odpowiedź");
+  assert.equal(c.events[0].type, "status", "aplikacja od razu dostaje stan „myślę”");
+});
+
+test("„Co jest przede mną?” – oficjalne informacje o atrakcji w polu widzenia dołączone do pytania", async () => {
+  const { chat } = await load();
+  const { sanitizeContext } = await import("../server/agent/context.js");
+  const { attractionById } = await import("../server/data/attractions.js");
+  const { loadOfficial } = await import("../server/services/official.js");
+  await loadOfficial();
+  const g = attractionById.get("ogrod-botaniczny");
+  const ctx = sanitizeContext({ lang: "pl", lat: g.lat, lon: g.lon, heading: 0 });
+  requests.length = 0;
+  replies = [(b, res) => stream(res, [chunk({ content: "Przed tobą Ogród Botaniczny UJ – najstarszy w Polsce [K1]." }, "stop")])];
+  const c = collector();
+  await chat({ sessionId: "s-view", text: "Co jest przede mną?", ctx, emit: c.emit, signal: new AbortController().signal });
+  assert.match(requests[0].body.messages.at(-1).content, /Ogród Botaniczny UJ – oficjalne informacje[\s\S]*Najstarszy ogród botaniczny w Polsce/);
+  const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
+  assert.ok(sources?.some((s) => s.url.startsWith("https://ogrod.uj.edu.pl")));
+});

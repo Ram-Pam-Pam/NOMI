@@ -99,24 +99,24 @@ export async function narrate(id, { manual = false, onRoute = false } = {}) {
   const controller = new AbortController();
   current = controller;
   let error = null;
-  let verified = false;
+  let spoken = false;
   const speakNow = () => {
-    if (verified) return;
-    verified = true;
+    if (spoken) return;
+    spoken = true;
     if (voiceOn && msg.text().trim()) speak(stripEmoji(msg.text()), { force: true });
   };
   try {
+    // Serwer najpierw sprawdza opowieść w faktach, potem wysyła ją w całości ("answer") – czytamy od razu.
     await streamSSE(
       "/api/narrate",
       { attractionId: id, sessionId: sessionId(), context: buildContext(), onRoute },
       (event, data) => {
-        if (event === "text") msg.append(data.delta);
-        else if (event === "verifying") msg.setVerify("checking");
-        else if (event === "verified") {
-          if (data.text) msg.replace(data.text);
-          msg.setVerify(data.status);
+        if (event === "verifying") msg.pending(t("verifying"));
+        else if (event === "answer") {
+          msg.show(data.text, data.status);
           speakNow();
-        } else if (event === "action" && data.type === "sources") msg.setSources(data.sources);
+        } else if (event === "text") msg.append(data.delta);
+        else if (event === "action" && data.type === "sources") msg.setSources(data.sources);
         else if (event === "error") error = data.message;
       },
       { signal: controller.signal },
@@ -124,7 +124,7 @@ export async function narrate(id, { manual = false, onRoute = false } = {}) {
   } catch (err) {
     if (err.name !== "AbortError") error = err.message;
   } finally {
-    if (!error) speakNow(); // serwer bez weryfikacji (np. opowieść z gotowych faktów)
+    if (!error) speakNow(); // zgodność wstecz: serwer bez zdarzenia "answer"
     msg.finish(error);
     if (current === controller) current = null;
     if (story) {

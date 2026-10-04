@@ -32,7 +32,8 @@ const DICT = {
     welcome:
       "Hej, tu **NOMI** – twój kumpel-przewodnik po Krakowie. Wołaj, kiedy chcesz: poprowadzę cię pieszo albo tramwajem, opowiem, co masz przed oczami, i podpowiem, gdzie dobrze zjeść. Wszystko, co mówię, sprawdzam w oficjalnych źródłach i podaję je na końcu odpowiedzi.",
     s1: "Co jest przede mną?", s2: "Gdzie dobrze zjeść w pobliżu?", s3: "Jak dojechać na Kazimierz?", s4: "Jaki bilet kupić?",
-    s5: "Opowiedz o najbliższej atrakcji", s6: "Co dziś się dzieje w mieście?",
+    s5: "Opowiedz o najbliższej atrakcji", s6: "Co dziś się dzieje w mieście?", s7: "Jaka jest teraz pogoda?", s8: "Co zobaczyć w 2 godziny?",
+    thinking: "Myślę…", preparingStory: "Przygotowuję ciekawostkę…",
     you: "Ty", nomi: "NOMI", nearby: "W pobliżu", stop: "Zatrzymaj", funFact: "Ciekawostka",
     verifying: "Sprawdzam w oficjalnych źródłach…", verifiedOk: "Sprawdzone w oficjalnych źródłach", verifiedFixed: "Poprawione po sprawdzeniu w źródłach",
     verifiedNone: "Nie udało się sprawdzić w źródłach – traktuj ostrożnie", verifiedNoSources: "Bez faktów do sprawdzenia",
@@ -106,7 +107,8 @@ const DICT = {
     welcome:
       "Hey, I'm **NOMI** – your buddy guide to Kraków. Call me any time: I'll walk you there or get you on the right tram, tell you what you're looking at and where to eat well. I check everything I say against official sources and list them at the end of each answer.",
     s1: "What's in front of me?", s2: "Where to eat nearby?", s3: "How do I get to Kazimierz?", s4: "Which ticket should I buy?",
-    s5: "Tell me about the nearest sight", s6: "What's on in town today?",
+    s5: "Tell me about the nearest sight", s6: "What's on in town today?", s7: "What's the weather like?", s8: "What to see in 2 hours?",
+    thinking: "Thinking…", preparingStory: "Preparing a fun fact…",
     you: "You", nomi: "NOMI", nearby: "Nearby", stop: "Stop", funFact: "Fun fact",
     verifying: "Checking official sources…", verifiedOk: "Checked against official sources", verifiedFixed: "Corrected after checking sources",
     verifiedNone: "Couldn't check sources – treat with care", verifiedNoSources: "No facts to check",

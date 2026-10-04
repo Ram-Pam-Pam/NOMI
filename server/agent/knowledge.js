@@ -2,6 +2,7 @@
 // i podpowiedzi kolejnych pytań po odpowiedzi.
 import { normalize } from "../geo.js";
 import { ATTRACTIONS } from "../data/attractions.js";
+import { attractionsInView, nearbyAttractions } from "../services/attractions.js";
 import { loadRag, searchKnowledge } from "../rag/index.js";
 import { sourceLabel } from "../rag/sources.js";
 import { officialPublic, officialText } from "../services/official.js";
@@ -116,8 +117,33 @@ function attractionFacts(query, citations) {
   return out;
 }
 
-export async function autoKnowledge(query, citations) {
-  const facts = attractionFacts(query, citations);
+// Pytania o to, co użytkownik ma przed oczami.
+const LOOK_RE = /przede mn|przed sob|co widz|co to (jest|za)|co tu jest|w pobli|naprzeciw|in front of me|what am i (looking|seeing)|what is (this|that)|what'?s (this|that|around|nearby)|near me/i;
+
+/**
+ * Oficjalne informacje o atrakcjach w polu widzenia (albo najbliższych, gdy brak kompasu) – dla pytań
+ * „co jest przede mną?”, żeby odpowiedź miała fakty i źródła, a nie tylko nazwę z kontekstu.
+ */
+function viewFacts(text, ctx, citations) {
+  if (!ctx || ctx.lat == null || ctx.lon == null || !LOOK_RE.test(text)) return [];
+  const pos = { lat: ctx.lat, lon: ctx.lon };
+  const list = ctx.heading != null ? attractionsInView({ ...pos, heading: ctx.heading, maxDistance: 300, limit: 2 }) : [];
+  const near = list.length ? list : nearbyAttractions({ ...pos, radius: 300, limit: 2 });
+  const out = [];
+  for (const x of near) {
+    const o = officialPublic(x.id);
+    if (!o?.sources?.length || !(o.summary || o.facts?.length)) continue;
+    const hours = officialText(x.id, { facts: false, sources: false });
+    const body = [o.summary, ...(o.facts || [])].filter(Boolean).join(" ") + (hours ? `\nOficjalnie: ${hours}` : "");
+    const [c] = citations.label([{ title: `${x.name} – oficjalne informacje`, url: o.sources[0], source: sourceLabel(o.sources[0]), fetched: o.fetched, text: body }]);
+    out.push(c);
+  }
+  return out;
+}
+
+export async function autoKnowledge(query, citations, { text = query, ctx = null } = {}) {
+  const seen = new Set();
+  const facts = [...viewFacts(text, ctx, citations), ...attractionFacts(query, citations)].filter((c) => !seen.has(c.url) && seen.add(c.url));
   let found = [];
   if (await loadRag()) {
     try {
@@ -179,15 +205,13 @@ const SUGGEST = {
   get_departures: { pl: ["Jaki bilet kupić?"], en: ["Which ticket should I buy?"] },
   get_ticket_info: { pl: ["Gdzie kupię bilet?"], en: ["Where can I buy a ticket?"] },
 };
-const DEFAULT = { pl: ["Co jest w pobliżu?", "Gdzie zjeść?", "Co dziś się dzieje?"], en: ["What's nearby?", "Where to eat?", "What's on today?"] };
 const YES_NO = { pl: ["Tak", "Nie, dzięki"], en: ["Yes", "No, thanks"] };
 
-/** 2–4 krótkie podpowiedzi kolejnego pytania na podstawie użytych narzędzi i końca odpowiedzi. */
+/** 0–4 podpowiedzi kolejnego pytania z kontekstu odpowiedzi (podstawowe pytania są stale nad polem wpisywania). */
 export function suggestionsFor({ tools, answer, lang }) {
   const l = lang === "en" ? "en" : "pl";
   const out = [];
   if (/\?\s*$/.test(String(answer).replace(/\[K[\d,;\sK]+\]/g, "").trim())) out.push(...YES_NO[l]);
   for (const name of [...tools].reverse()) out.push(...(SUGGEST[name]?.[l] || []));
-  if (!tools.length) out.push(...DEFAULT[l]);
   return [...new Set(out)].slice(0, 4);
 }

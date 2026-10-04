@@ -21,6 +21,8 @@ Zadanie: sprawdź KAŻDE twierdzenie faktograficzne w ODPOWIEDZI – liczby, cen
 - Poparte = wynika z dowodów (dopuszczalne: parafraza, tłumaczenie, zaokrąglenie, przeliczenie jednostek, odniesienie godzin otwarcia do dzisiejszej daty z kontekstu, wniosek z liczb w dowodach).
 - Uważaj na przeniesienie faktu: liczba, data lub nazwa, która jest w dowodach, ale dotyczy czegoś innego, to twierdzenie NIEPOPARTE. Przykłady: „od XVI wieku hejnał grany jest co godzinę” użyte jako „legenda wydarzyła się w XVI wieku”; godziny i ceny jednej wystawy lub trasy na Wawelu podane jako godziny i ceny całego zamku. Sprawdzaj, którego obiektu dotyczy każdy fragment dowodów.
 - Niepoparte (brak w dowodach albo sprzeczne z nimi) – usuń je albo popraw zgodnie z dowodami. Jeśli po usunięciu brakuje odpowiedzi na pytanie, napisz uczciwie jednym zdaniem, że nie masz na ten temat oficjalnej informacji.
+- Po usunięciu lub poprawce przeredaguj odpowiedź tak, by czytała się płynnie i naturalnie: bez urwanych zdań, pustych punktów listy, osieroconych spójników, podwójnych spacji i odwołań do usuniętych treści.
+- Nie dopisuj uwag o źródłach, wynikach wyszukiwania ani o samym sprawdzaniu (np. „według wyników wyszukiwania”, „odległość podana w danych”) – odpowiedź ma brzmieć jak naturalna wypowiedź przewodnika.
 - NIE dodawaj żadnych nowych faktów spoza dowodów. Zostaw treści, których nie da się sprawdzić z natury: powitania, pytania do użytkownika, propozycje pomocy („Prowadzić cię tam?”), ogólne rady (wygodne buty, uwaga na torowiska), numer alarmowy 112, informację, że trasa jest na mapie.
 - Zachowaj język odpowiedzi, koleżeński styl, formatowanie (akapity, listy) i etykiety cytowań [K…] przy zdaniach, które zostają. Usuń etykiety, których nie ma w dowodach, oraz artefakty: znaczniki, JSON, emoji, urwane lub powtórzone zdania, listy adresów URL na końcu.
 - verdict = "ok", gdy nic nie trzeba zmieniać (answer = odpowiedź bez zmian); "corrected", gdy cokolwiek poprawiłeś lub usunąłeś. W unsupported wypisz krótko usunięte lub poprawione twierdzenia.
@@ -49,6 +51,8 @@ export function cleanAnswer(text, { maxLabel = Infinity } = {}) {
       return ok && /^K/.test(labels) ? m : "";
     })
     .replace(EMOJI_RE, "")
+    // Wąskie i niełamliwe spacje modelu („33 m”) w wąskich dymkach wyglądają jak sklejone słowa.
+    .replace(/[   ]/g, " ")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/[ \t]{2,}/g, " ")

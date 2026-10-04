@@ -85,7 +85,7 @@ test("podpowiedzi: tak/nie po pytaniu, zależnie od narzędzi, bez powtórzeń",
   const s = suggestionsFor({ tools: ["plan_route"], answer: "Jedź tramwajem 18. Pokazać odjazdy? [K2]", lang: "pl" });
   assert.deepEqual(s.slice(0, 2), ["Tak", "Nie, dzięki"]);
   assert.ok(s.includes("Jaki bilet kupić?"));
-  assert.ok(suggestionsFor({ tools: [], answer: "Cześć!", lang: "en" }).includes("What's nearby?"));
+  assert.deepEqual(suggestionsFor({ tools: [], answer: "Cześć!", lang: "en" }), [], "ogólne pytania są w stałym pasku");
   assert.ok(suggestionsFor({ tools: ["find_attractions", "find_attractions"], answer: "x", lang: "pl" }).length <= 4);
 });
 

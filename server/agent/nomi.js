@@ -11,6 +11,7 @@ import { buildContextBlock, detectLang, hasPosition, preferenceHint } from "./co
 import { AgentError } from "./errors.js";
 import { Citations, autoKnowledge, retrievalQuery, suggestionsFor } from "./knowledge.js";
 import * as compat from "./openaiCompat.js";
+import { warmPlaces } from "./tools.js";
 import { cleanAnswer, needsVerification, verifyAnswer } from "./verify.js";
 
 export { AgentError };
@@ -100,7 +101,10 @@ const EMPTY_ANSWER = {
 /**
  * Rozmowa z NOMI. Historia sesji jest tylko dopisywana – nowa tura trafia do sesji
  * dopiero po pomyślnym zakończeniu (przerwana tura nie zostawia osieroconych wywołań narzędzi).
- * Odpowiedź przed zapisaniem jest sprawdzana w dowodach tej tury (fragmenty oficjalnych stron, wyniki narzędzi).
+ *
+ * Najpierw sprawdzenie, potem odpowiedź: tekst modelu NIE jest przesyłany w trakcie pisania – serwer go zbiera,
+ * sprawdza w dowodach tej tury i dopiero wtedy wysyła jedną, gotową odpowiedź (zdarzenie "answer").
+ * Aplikacja w międzyczasie pokazuje stan (myślę → narzędzia → sprawdzam), więc nic się nie podmienia ani nie urywa.
  */
 export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
   const session = getSession(sessionId);
@@ -114,16 +118,21 @@ export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
   const citations = new Citations(session);
   const tools = [];
   const evidence = []; // wyniki narzędzi tej tury – dowody do sprawdzenia odpowiedzi
-  let answer = "";
+  // Tekst modelu w rundach (przed wywołaniem narzędzia / po nim). Odpowiedzią jest ostatnia runda –
+  // wcześniejsze to zwykle „Już sprawdzam…”, które po sprawdzeniu nie mają sensu.
+  const rounds = [""];
   const tracked = (event, data) => {
-    if (event === "text") answer += data.delta;
-    if (event === "text_break") answer += "\n\n";
+    if (event === "text") return void (rounds[rounds.length - 1] += data.delta);
+    if (event === "text_break") return void rounds.push("");
+    if (event === "retry") return void (rounds[rounds.length - 1] = "");
     if (event === "tool") tools.push(data.name);
     emit(event, data);
   };
+  emit("status", { stage: "thinking" });
+  warmPlaces(text, ctx);
   try {
     // Wiedza z oficjalnych źródeł dobrana do pytania – agent dostaje ją od razu, bez wywołania narzędzia.
-    const knowledge = await autoKnowledge(retrievalQuery(text, session.messages), citations);
+    const knowledge = await autoKnowledge(retrievalQuery(text, session.messages), citations, { text, ctx });
     const added = await backend().runChat({
       history: session.messages,
       text,
@@ -138,9 +147,13 @@ export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
         onResult: (name, input, content) => evidence.push(`Wynik narzędzia ${name} ${JSON.stringify(input)}:\n${content}`),
       },
     });
-    if (!added) return; // tura odrzucona – nic nie zapisujemy
+    if (!added) {
+      // Tura odrzucona (np. odmowa modelu) – pokazujemy komunikat, ale nic nie zapisujemy w historii.
+      emit("answer", { text: rounds.join("\n\n").trim() || EMPTY_ANSWER[ctx.replyLang === "en" ? "en" : "pl"], status: "skipped" });
+      return;
+    }
 
-    const draft = answer.trim();
+    const draft = rounds.at(-1).trim();
     const v = await checkAnswer({
       question: text,
       answer: draft,
@@ -150,7 +163,6 @@ export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
       maxLabel: citations.maxLabel,
     });
     const final = v.answer || EMPTY_ANSWER[ctx.replyLang === "en" ? "en" : "pl"];
-    emit("verified", { status: v.status, ...(final !== draft ? { text: final } : {}), ...(v.unsupported?.length ? { unsupported: v.unsupported } : {}) });
     if (final !== draft) replaceFinalText(added, final);
     session.messages.push(...added);
     session.evidence = [...(session.evidence || []), knowledge, ...evidence]
@@ -160,6 +172,7 @@ export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
 
     const sources = citations.cited(final, { extraLabels: v.support || [] });
     if (sources.length) emit("action", { type: "sources", sources });
+    emit("answer", { text: final, status: v.status, ...(v.unsupported?.length ? { unsupported: v.unsupported } : {}) });
     emit("suggestions", { items: suggestionsFor({ tools, answer: final, lang: ctx.replyLang }) });
   } finally {
     session.busy = false;
@@ -249,17 +262,19 @@ export async function narrate({ attraction: a, ctx, emit, signal, sessionId, onR
     .filter(Boolean)
     .join("\n\n");
 
+  // Tekst opowieści zbieramy – aplikacja dostaje dopiero sprawdzoną wersję (zdarzenie "answer").
   let told = "";
   let fromAI = true;
   const tracked = (event, data) => {
-    if (event === "text" && data.delta) told += data.delta;
+    if (event === "text") return void (told += data.delta || "");
     emit(event, data);
   };
+  emit("status", { stage: "story" });
   try {
     const { refused } = await backend().runNarration({ prompt, emit: tracked, signal });
     if (refused && !told) {
       fromAI = false;
-      tracked("text", { delta: staticNarration(a, geo, lang) });
+      told = staticNarration(a, geo, lang);
     }
   } catch (err) {
     if (signal?.aborted) throw err;
@@ -267,7 +282,7 @@ export async function narrate({ attraction: a, ctx, emit, signal, sessionId, onR
     console.warn("[narrate] AI niedostępne, narracja statyczna:", describeError(err));
     if (!told) {
       fromAI = false;
-      tracked("text", { delta: staticNarration(a, geo, lang) });
+      told = staticNarration(a, geo, lang);
     }
     emit("notice", { message: describeError(err, lang) });
   }
@@ -275,6 +290,7 @@ export async function narrate({ attraction: a, ctx, emit, signal, sessionId, onR
   // Opowieść z modelu sprawdzamy w faktach, na których miała się opierać (opowieść awaryjna to same fakty).
   const draft = told.trim();
   let final = draft;
+  let status = "skipped";
   if (draft && fromAI) {
     const official = officialText(a.id, { facts: false });
     const v = await checkAnswer({
@@ -290,11 +306,9 @@ export async function narrate({ attraction: a, ctx, emit, signal, sessionId, onR
       signal,
     });
     final = v.answer || draft;
+    status = v.status;
     // Ciekawostka po drodze kończy się bez pytania – nawigacja zaraz wraca (model nie zawsze tego pilnuje).
     if (onRoute) final = dropTrailingQuestion(final);
-    emit("verified", { status: v.status, ...(final !== draft ? { text: final } : {}) });
-  } else {
-    emit("verified", { status: "skipped" });
   }
   // Źródła opowieści: oficjalne strony atrakcji.
   const o = officialPublic(a.id);
@@ -304,6 +318,7 @@ export async function narrate({ attraction: a, ctx, emit, signal, sessionId, onR
       sources: o.sources.map((url) => ({ title: a.name[lang] || a.name.pl, url, source: sourceLabel(url), fetched: o.fetched })),
     });
   }
+  emit("answer", { text: final, status });
   if (sessionId && final) appendToSession(getSession(sessionId), narrationTurn(a, final));
 }
 

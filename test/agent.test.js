@@ -53,6 +53,7 @@ before(async () => {
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   process.env.NOMI_SKIP_DOTENV = "1";
   process.env.NOMI_VERIFY = "off"; // sprawdzanie odpowiedzi testowane osobno (compat.test.js)
+  process.env.OVERPASS_URL = "http://127.0.0.1:9/"; // bez sieci w testach
   process.env.LLM_PROVIDER = "anthropic";
   process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.address().port}`;
@@ -87,7 +88,9 @@ test("agent: narzędzie → wynik → odpowiedź, historia tylko dopisywana", as
   const result = JSON.parse(toolResult.content);
   assert.equal(result.recommendation.price, 6);
 
-  const text = events.filter((e) => e.type === "text").map((e) => e.data.delta).join("");
+  // Tekst modelu nie idzie do aplikacji w trakcie – przychodzi jedna gotowa odpowiedź.
+  assert.ok(!events.some((e) => e.type === "text"));
+  const text = events.find((e) => e.type === "answer")?.data.text || "";
   assert.match(text, /30-minutowy/);
   assert.ok(events.some((e) => e.type === "tool" && e.data.name === "get_ticket_info"));
   assert.ok(events.some((e) => e.type === "tool_done" && e.data.ok));

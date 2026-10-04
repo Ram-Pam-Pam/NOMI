@@ -13,7 +13,7 @@ import { officialPublic, officialSourcesFor, startOfficialService, withOfficial 
 import { routePlan } from "./services/planRouting.js";
 import { ragStatus, searchKnowledge, startRagService } from "./rag/index.js";
 import { searchPlaces } from "./services/geocode.js";
-import { PLACE_TYPES, findPlaces } from "./services/places.js";
+import { PLACE_TYPES, findPlaces, warmArea } from "./services/places.js";
 import { planRoute } from "./services/routes.js";
 import { localYmd } from "./time.js";
 import { nextDepartures, realtime, startTimetableService, transitStatus, vehiclesNear } from "./transit/index.js";
@@ -56,6 +56,17 @@ function openSse(req, res) {
 
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, ai: aiStatus(), transit: transitStatus(), knowledge: ragStatus(), time: new Date().toISOString() });
+});
+
+// Rozgrzanie pamięci miejsc wokół użytkownika (lokale, zabytki) – żeby pytania do NOMI nie czekały na Overpass.
+app.post("/api/warm", (req, res) => {
+  const lat = num(req.body?.lat);
+  const lon = num(req.body?.lon);
+  if (lat === null || lon === null || lat < config.bbox.south || lat > config.bbox.north || lon < config.bbox.west || lon > config.bbox.east) {
+    return res.status(204).end();
+  }
+  warmArea(lat, lon);
+  res.status(202).json({ warming: true });
 });
 
 // Wyszukiwanie w bazie wiedzy z oficjalnych źródeł (podgląd i diagnostyka).

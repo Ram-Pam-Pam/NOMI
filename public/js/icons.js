@@ -69,6 +69,7 @@ const P = {
   chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   baby: '<circle cx="12" cy="6" r="3"/><path d="M8 21v-5l-2-3 3-2h6l3 2-2 3v5"/>',
   sparkle: '<path d="M12 3v4"/><path d="M12 17v4"/><path d="M3 12h4"/><path d="M17 12h4"/><path d="m6 6 2 2"/><path d="m16 16 2 2"/><path d="m6 18 2-2"/><path d="m16 8 2-2"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
   dumpling: '<path d="M3 15c0-5 4-9 9-9s9 4 9 9H3Z"/><path d="M7 9.5 8 12"/><path d="M12 7.5V11"/><path d="m17 9.5-1 2.5"/><path d="M3 15c2 2 16 2 18 0"/>',
 };
 

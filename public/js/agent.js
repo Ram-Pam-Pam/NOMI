@@ -1,6 +1,7 @@
 // Zakładka NOMI: czat tekstowy i głosowy z agentem AI.
-// Każda odpowiedź jest sprawdzana przez serwer w oficjalnych źródłach (zdarzenia "verifying" → "verified");
-// głos czyta dopiero sprawdzoną wersję, a źródła są wypisane na końcu odpowiedzi.
+// Najpierw sprawdzenie, potem odpowiedź: serwer sprawdza odpowiedź w oficjalnych źródłach ZANIM ją wyśle
+// (w międzyczasie stan: myślę → narzędzia → sprawdzam), po czym przychodzi jedna gotowa odpowiedź ("answer")
+// ze źródłami na końcu – bez podmieniania tekstu w trakcie i bez urwanych fragmentów.
 import { postJSON, streamSSE } from "./api.js";
 import { buildContext } from "./context.js";
 import { escapeHtml, fmtClock, fmtMinutes, renderMarkdown, stripEmoji } from "./format.js";
@@ -95,20 +96,32 @@ function renderHistory() {
   scrollDown();
 }
 
-/** Gotowe pytania tylko na start (potem są podpowiedzi pod odpowiedziami). */
-function syncSuggestVisibility() {
-  $("chat-suggest").classList.toggle("hidden", history.length > 0);
+// Podstawowe pytania – zawsze pod ręką nad polem wpisywania (jedno dotknięcie = pytanie do NOMI).
+const QUICK = [
+  ["s1", "eye"],
+  ["s5", "book"],
+  ["s2", "utensils"],
+  ["s3", "tram"],
+  ["s4", "ticket"],
+  ["s6", "calendar"],
+  ["s7", "sun"],
+  ["s8", "compass"],
+];
+
+/** W trakcie odpowiedzi pasek jest przygaszony (kolejne pytanie – po odpowiedzi). */
+function syncSuggestBusy() {
+  $("chat-suggest").classList.toggle("busy", Boolean(controller));
 }
 
 function renderSuggestions() {
-  syncSuggestVisibility();
-  $("chat-suggest").innerHTML = ["s1", "s2", "s3", "s4", "s5", "s6"]
-    .map((k) => `<button class="chip" type="button" data-suggest="${k}">${escapeHtml(t(k))}</button>`)
-    .join("");
+  $("chat-suggest").innerHTML = QUICK.map(
+    ([k, ic]) => `<button class="chip" type="button" data-suggest="${k}">${icon(ic)}${escapeHtml(t(k))}</button>`,
+  ).join("");
   $("chat-suggest").onclick = (e) => {
     const b = e.target.closest("[data-suggest]");
     if (b && !controller) send(t(b.dataset.suggest));
   };
+  syncSuggestBusy();
 }
 
 export function refreshAgentTexts() {
@@ -180,9 +193,8 @@ function renderAnswer(raw, sources) {
   return `${html}<div class="sources"><div class="sources-h">${t("sources")}</div><ol>${list}</ol></div>`;
 }
 
-/** Stan sprawdzenia w źródłach pod odpowiedzią. */
+/** Wynik sprawdzenia w źródłach pod gotową odpowiedzią. */
 function verifyHtml(status) {
-  if (status === "checking") return `<div class="verify checking"><span class="spinner"></span>${escapeHtml(t("verifying"))}</div>`;
   if (status === "ok") return `<div class="verify ok">${icon("shieldCheck")}${escapeHtml(t("verifiedOk"))}</div>`;
   if (status === "corrected") return `<div class="verify corrected">${icon("shieldCheck")}${escapeHtml(t("verifiedFixed"))}</div>`;
   if (status === "unverified") return `<div class="verify unverified">${icon("alert")}${escapeHtml(t("verifiedNone"))}</div>`;
@@ -190,8 +202,47 @@ function verifyHtml(status) {
 }
 
 function setVerify(msgEl, status) {
-  msgEl.classList.toggle("checking", status === "checking");
   msgEl.querySelector(".verify-slot").innerHTML = verifyHtml(status);
+}
+
+/** Stan oczekiwania na odpowiedź: kropki + co NOMI teraz robi (myśli, sprawdza w źródłach…). */
+function pendingHtml(text) {
+  return `<div class="pending"><span class="typing"><i></i><i></i><i></i></span><span class="pending-text">${escapeHtml(text)}</span></div>`;
+}
+
+function setPending(bodyEl, text) {
+  const el = bodyEl.querySelector(".pending-text");
+  if (el) el.textContent = text;
+  else bodyEl.innerHTML = pendingHtml(text);
+}
+
+const reducedMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+/**
+ * Pokazuje gotową odpowiedź płynnie (szybkie odsłanianie, ok. 0,8 s niezależnie od długości).
+ * W trakcie bez przypisów i niedokończonych etykiet; na końcu pełny render ze źródłami.
+ */
+function reveal(bodyEl, text, finalHtml, onStep) {
+  if (reducedMotion() || document.hidden || text.length < 40) {
+    bodyEl.innerHTML = finalHtml;
+    onStep?.();
+    return;
+  }
+  const step = Math.max(6, Math.ceil(text.length / 48));
+  let n = 0;
+  const tick = () => {
+    n = Math.min(text.length, n + step);
+    if (n >= text.length) {
+      bodyEl.innerHTML = finalHtml;
+      onStep?.();
+      return;
+    }
+    const cut = text.lastIndexOf(" ", n) > 0 ? text.slice(0, text.lastIndexOf(" ", n)) : text.slice(0, n);
+    bodyEl.innerHTML = renderAnswer(cut.replace(/\[[^\]]*$/, ""), null);
+    onStep?.();
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 
 function addNomiStatic(text, { save = true, narration = false, title = "", sources, verify } = {}) {
@@ -302,32 +353,25 @@ export async function send(text, { voice = false } = {}) {
   lastWasVoice = voice;
   clearFollowups();
   addUser(text);
-  syncSuggestVisibility();
   const msgEl = nomiShell();
   const bodyEl = msgEl.querySelector(".body");
   const toolsEl = msgEl.querySelector(".tools");
-  bodyEl.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
+  bodyEl.innerHTML = pendingHtml(t("thinking"));
   scrollDown();
 
   controller = new AbortController();
   setSendButton(true);
-  let raw = "";
-  let roundStart = 0;
+  syncSuggestBusy();
+  let raw = ""; // gotowa (sprawdzona) odpowiedź – serwer wysyła ją w całości
+  let answered = false;
   let failed = false;
   let sources = null;
   let followups = null;
-  let verify = null; // checking | ok | corrected | unverified
-  let spoken = false;
+  let verify = null; // ok | corrected | unverified
   const render = () => {
-    bodyEl.innerHTML = renderAnswer(raw, sources) || '<span class="typing"><i></i><i></i><i></i></span>';
+    bodyEl.innerHTML = renderAnswer(raw, sources);
     msgEl.dataset.raw = raw;
     scrollDown();
-  };
-  // Czytamy dopiero sprawdzoną odpowiedź (bez etykiet i adresów – czyści je voice.js).
-  const speakFinal = () => {
-    if (spoken || !raw.trim()) return;
-    spoken = true;
-    speak(stripEmoji(raw));
   };
 
   try {
@@ -336,17 +380,8 @@ export async function send(text, { voice = false } = {}) {
       { sessionId: sessionId(), message: text, context: buildContext() },
       (event, data) => {
         switch (event) {
-          case "text":
-            raw += data.delta;
-            render();
-            break;
-          case "text_break":
-            if (raw && !raw.endsWith("\n\n")) raw += "\n\n";
-            roundStart = raw.length;
-            break;
-          case "retry":
-            raw = raw.slice(0, roundStart);
-            render();
+          case "status":
+            setPending(bodyEl, t("thinking"));
             break;
           case "tool": {
             const chip = document.createElement("span");
@@ -354,6 +389,8 @@ export async function send(text, { voice = false } = {}) {
             chip.dataset.id = data.id;
             chip.innerHTML = `<span class="spinner"></span>${escapeHtml(data.label)}`;
             toolsEl.appendChild(chip);
+            setPending(bodyEl, `${data.label}…`);
+            scrollDown();
             break;
           }
           case "tool_done": {
@@ -362,27 +399,32 @@ export async function send(text, { voice = false } = {}) {
               chip.className = `tool-chip ${data.ok ? "done" : "err"}`;
               chip.querySelector(".spinner")?.replaceWith(document.createRange().createContextualFragment(icon(data.ok ? "check" : "alert")));
             }
+            setPending(bodyEl, t("thinking"));
             break;
           }
           case "verifying":
-            verify = "checking";
+            setPending(bodyEl, t("verifying"));
+            break;
+          case "answer":
+            // Jedna, gotowa odpowiedź (już sprawdzona) – głos rusza od razu, tekst odsłania się płynnie.
+            answered = true;
+            raw = data.text || "";
+            verify = data.status === "skipped" ? null : data.status;
+            msgEl.dataset.raw = raw;
+            if (raw.trim()) speak(stripEmoji(raw));
+            reveal(bodyEl, raw, renderAnswer(raw, sources), scrollDown);
             setVerify(msgEl, verify);
             break;
-          case "verified":
-            if (data.text) raw = data.text;
-            verify = data.status === "skipped" ? null : data.status;
-            setVerify(msgEl, verify);
+          case "text":
+            // Zgodność wstecz (serwer bez zdarzenia "answer").
+            raw += data.delta;
             render();
-            speakFinal();
             break;
           case "action":
             if (data.type === "route") routeCard(msgEl, data.route);
             if (data.type === "markers") placesCard(msgEl, data.places);
             if (data.type === "plan_add") emit("plan-add", data.item);
-            if (data.type === "sources") {
-              sources = data.sources;
-              render();
-            }
+            if (data.type === "sources") sources = data.sources;
             if (data.type === "pref") {
               setPref(data.key, data.value);
               toast(data.value ? `${t("prefSaved")}: ${data.value}` : t("prefForgot"), { icon: "check" });
@@ -397,7 +439,7 @@ export async function send(text, { voice = false } = {}) {
           case "error":
             failed = true;
             msgEl.classList.add("error");
-            raw += `${raw ? "\n\n" : ""}${data.message}`;
+            raw = data.message;
             render();
             break;
         }
@@ -408,19 +450,20 @@ export async function send(text, { voice = false } = {}) {
     if (err.name !== "AbortError") {
       failed = true;
       msgEl.classList.add("error");
-      raw += `${raw ? "\n\n" : ""}${err.message}`;
+      raw = err.message;
+      render();
     }
   } finally {
     controller = null;
     setSendButton(false);
-    if (!raw) raw = "…";
-    if (verify === "checking") {
-      verify = failed ? null : "unverified";
-      setVerify(msgEl, verify);
+    syncSuggestBusy();
+    if (!answered && !failed) {
+      // Przerwane przez użytkownika albo brak odpowiedzi – bez wiszących kropek.
+      raw = raw || "…";
+      render();
     }
-    render();
-    if (!failed) {
-      speakFinal();
+    if (!failed && raw.trim() && raw !== "…") {
+      if (!answered) speak(stripEmoji(raw));
       history.push({ role: "nomi", text: raw, ...(sources ? { sources } : {}), ...(verify ? { verify } : {}) });
       saveHistory();
       renderFollowups(msgEl, followups);
@@ -449,42 +492,43 @@ function toggleMic() {
 
 // ------------------------------------------------ opowieści (wywoływane przez proximity.js)
 
-/** Wiadomość z opowieścią o atrakcji: szkic → (sprawdzenie) → wersja ostateczna ze źródłami. */
+/** Wiadomość z opowieścią o atrakcji: najpierw stan („przygotowuję, sprawdzam”), potem gotowa wersja ze źródłami. */
 export function narrationMessage(title) {
   const el = nomiShell({ narration: true, title });
   const body = el.querySelector(".body");
-  body.innerHTML = '<span class="typing"><i></i><i></i><i></i></span>';
+  body.innerHTML = pendingHtml(t("preparingStory"));
   scrollDown();
   let raw = "";
   let sources = null;
   let verify = null;
-  const render = () => {
-    el.dataset.raw = raw;
-    body.innerHTML = renderAnswer(raw || "…", sources);
-    scrollDown();
-  };
   return {
-    append(delta) {
-      raw += delta;
-      render();
+    pending(text) {
+      setPending(body, text);
     },
-    replace(text) {
-      raw = text;
-      render();
+    /** Gotowa, sprawdzona opowieść. */
+    show(text, status) {
+      raw = text || "";
+      verify = status === "skipped" ? null : status;
+      el.dataset.raw = raw;
+      reveal(body, raw, renderAnswer(raw || "…", sources), scrollDown);
+      setVerify(el, verify);
+    },
+    append(delta) {
+      // Zgodność wstecz (serwer bez zdarzenia "answer").
+      raw += delta;
+      el.dataset.raw = raw;
+      body.innerHTML = renderAnswer(raw, sources);
     },
     setSources(list) {
       sources = list;
-      render();
-    },
-    setVerify(status) {
-      verify = status === "skipped" ? null : status;
-      setVerify(el, verify);
     },
     text: () => raw,
     finish(error) {
-      if (error && !raw) raw = error;
-      if (verify === "checking") this.setVerify("unverified");
-      render();
+      if (error && !raw) {
+        raw = error;
+        body.innerHTML = renderAnswer(raw, null);
+      }
+      if (!raw) body.innerHTML = renderAnswer("…", null);
       if (raw && !error) {
         history.push({ role: "nomi", text: raw, narration: true, title, ...(sources ? { sources } : {}), ...(verify ? { verify } : {}) });
         saveHistory();
@@ -504,5 +548,4 @@ export async function resetChat() {
   history = [];
   saveHistory();
   renderHistory();
-  syncSuggestVisibility();
 }
