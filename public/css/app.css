@@ -494,3 +494,17 @@ textarea { resize: vertical; }
 .empty { text-align: center; color: var(--muted); padding: 20px; font-size: 0.92rem; }
 .spinner { width: 18px; height: 18px; border-radius: 50%; border: 3px solid rgba(255, 255, 255, 0.4); border-top-color: #fff; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* Przypisy do oficjalnych źródeł i podpowiedzi kolejnych pytań */
+.msg .cite { font-size: 0.68em; line-height: 0; margin-left: 1px; }
+.msg .cite a { display: inline-block; min-width: 1.35em; padding: 1px 4px; border-radius: 8px; background: color-mix(in srgb, var(--brand) 14%, transparent); color: var(--brand); text-decoration: none; text-align: center; font-weight: 600; }
+.msg .sources { margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); font-size: 0.78rem; color: var(--muted); }
+.msg .sources b { font-weight: 600; }
+.msg .sources ol { margin: 2px 0 0; padding-left: 1.3em; }
+.msg .sources li { margin: 2px 0; }
+.msg .sources a { color: inherit; }
+.followups { display: flex; flex-wrap: wrap; gap: 6px; margin: -2px 0 8px 4px; animation: fade-in 0.25s ease; }
+.followups .chip { background: var(--card); }
+.prefs-setting > div { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.prefs-setting small { overflow-wrap: anywhere; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }

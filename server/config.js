@@ -37,6 +37,12 @@ export const config = {
     planReasoningEffort: env.NOMI_PLAN_REASONING_EFFORT || "medium",
   },
 
+  // Baza wiedzy (RAG) z oficjalnych źródeł: model embeddingów (Sherlock) i co ile dni odświeżać.
+  rag: {
+    embedModel: env.RAG_EMBED_MODEL || "BAAI/bge-multilingual-gemma2",
+    ttlDays: Number(env.RAG_TTL_DAYS) || 7,
+  },
+
   // Claude (LLM_PROVIDER=anthropic)
   model: env.NOMI_MODEL || "claude-opus-5-5",
   chatEffort: env.NOMI_EFFORT || "low",

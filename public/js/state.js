@@ -57,8 +57,17 @@ export const state = {
   onVehicle: null, // { line, mode, since }
   recentNarrations: store.get("recentNarrations", []),
   plan: store.get("plan", null),
+  prefs: store.get("prefs", {}), // preferencje zapamiętane przez NOMI (dieta, poruszanie się…)
   activeTab: store.get("tab", "agent"),
 };
+
+/** Zapisuje (albo usuwa, gdy value = null) preferencję zapamiętaną przez NOMI. */
+export function setPref(key, value) {
+  if (value === null || value === undefined || value === "") delete state.prefs[key];
+  else state.prefs[key] = String(value).slice(0, 120);
+  store.set("prefs", state.prefs);
+  emit("prefs", state.prefs);
+}
 
 export function saveSettings(patch) {
   Object.assign(state.settings, patch);

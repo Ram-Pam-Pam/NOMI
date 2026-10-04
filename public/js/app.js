@@ -8,7 +8,7 @@ import { initNavigation } from "./navigation.js";
 import { initPlanner, refreshPlannerTexts } from "./planner.js";
 import { initProximity } from "./proximity.js";
 import { compassNeedsPermission, enableCompass, setDemoPosition, startGeolocation } from "./sensors.js";
-import { on, saveSettings, state, store } from "./state.js";
+import { on, saveSettings, setPref, state, store } from "./state.js";
 import { initTickets } from "./tickets.js";
 import { toast } from "./ui.js";
 import { stopSpeaking, unlockSpeech } from "./voice.js";
@@ -54,7 +54,14 @@ async function requestCompass() {
 
 // ------------------------------------------------ ustawienia
 
+function renderPrefs() {
+  const entries = Object.entries(state.prefs || {});
+  $("prefs-list").textContent = entries.length ? entries.map(([k, v]) => `${t(`pref_${k}`)}: ${v}`).join(" · ") : t("prefsNone");
+  $("set-prefs-clear").disabled = !entries.length;
+}
+
 function syncSettingsUi() {
+  renderPrefs();
   const s = state.settings;
   $("set-voice").checked = s.voice;
   $("set-navvoice").checked = s.navVoice;
@@ -76,6 +83,9 @@ function initSettings() {
       $("server-status").textContent = [
         h.transit.ready ? t("serverOk", { day: h.transit.day, stops: h.transit.stops }) : t("serverLoading"),
         h.ai.keyConfigured ? `AI (${h.ai.provider}): ${h.ai.model}` : t("aiMissing"),
+        h.knowledge?.ready
+          ? t("kbReady", { docs: h.knowledge.docs, chunks: h.knowledge.chunks, date: String(h.knowledge.builtAt).slice(0, 10) })
+          : t(h.knowledge?.building ? "kbBuilding" : "kbMissing"),
       ].join(" ");
     } catch {
       $("server-status").textContent = "";
@@ -99,6 +109,10 @@ function initSettings() {
     if (b) saveSettings({ lang: b.dataset.value });
   });
   $("set-compass").addEventListener("click", requestCompass);
+  $("set-prefs-clear").addEventListener("click", () => {
+    for (const k of Object.keys(state.prefs)) setPref(k, null);
+  });
+  on("prefs", renderPrefs);
   $("set-reset").addEventListener("click", () => {
     resetChat();
     dlg.close();

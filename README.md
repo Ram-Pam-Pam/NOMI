@@ -6,7 +6,7 @@ Aplikacja webowa (PWA) dla turystów z agentem AI **NOMI** – tekstowym i głos
 
 | Zakładka | Co robi |
 |---|---|
-| **NOMI** (agent) | Czat z agentem AI (Sherlock CloudFerro: GPT-OSS + Bielik, albo Claude) – pisany lub mówiony (mikrofon, czytanie odpowiedzi na głos, tryb rozmowy bez rąk). Agent korzysta z narzędzi: trasy, odjazdy na żywo, restauracje i kawiarnie z OpenStreetMap, „co jest przede mną” (GPS + kompas), cennik biletów, pinezki na mapie, dodawanie do planu. |
+| **NOMI** (agent) | Czat z agentem AI (Sherlock CloudFerro: GPT-OSS + Bielik, albo Claude) – pisany lub mówiony (mikrofon, czytanie odpowiedzi na głos, tryb rozmowy bez rąk). Agent ma **bazę wiedzy z ~440 oficjalnych stron** (krakow.travel, krakow.pl, muzea, ZTP) – fragmenty pasujące do pytania dostaje automatycznie, a w odpowiedzi pokazuje przypisy z linkami do źródeł. Narzędzia: trasy, odjazdy na żywo, restauracje i kawiarnie z OpenStreetMap, „co jest przede mną” (GPS + kompas), cennik biletów, **wydarzenia** (kalendarz krakow.travel), **pogoda i ostrzeżenia IMGW**, przeszukiwanie bazy wiedzy, **zapamiętywanie preferencji** (dieta, poruszanie się, zainteresowania), pinezki na mapie, dodawanie do planu. Po odpowiedzi – podpowiedzi kolejnych pytań. |
 | **Mapa** | MapLibre GL (tylko 2D) z wektorowymi mapami OpenFreeMap. Domyślnie bez znaczników – tylko twoja pozycja z promieniem patrzenia. Wyszukiwarka celu, warianty tras (pieszo / tramwaj / autobus) z opóźnieniami na żywo, rozróżnienie środków transportu na mapie. Szybkie przyciski: atrakcje, jedzenie, informacja turystyczna, toaleta, biletomat, bankomat/kantor, apteka. |
 | **Planer** | Trzy kroki: ile masz czasu → co lubisz → „Ułóż plan”. AI układa plan wg zainteresowań i **oficjalnych godzin otwarcia**, a serwer wyznacza **prawdziwe trasy między punktami** (pieszo po ulicach, dłuższe odcinki tramwajem/autobusem wg rozkładu ZTP) i przelicza godziny. Plan to oś trasy z odcinkami (kliknięcie = odcinek na mapie), rozwijanymi kartami miejsc (oficjalne godziny, ceny, źródło), zmianą kolejności i usuwaniem – po każdej zmianie trasy przeliczają się na nowo. |
 
@@ -23,6 +23,7 @@ Wymagany Node.js ≥ 20.12.
 npm install
 cp .env.example .env        # wpisz LLM_API_KEY (klucz Sherlock CloudFerro)
 npm run check:llm           # sprawdza klucz, modele i wywoływanie narzędzi
+npm run rag:build           # buduje bazę wiedzy z oficjalnych stron (ok. 5 min; inaczej serwer zrobi to w tle)
 npm start                   # http://localhost:3000
 ```
 
@@ -70,6 +71,8 @@ Sherlock udostępnia API zgodne z OpenAI; dane nie są używane do trenowania mo
 | `PORT`, `HOST` | `3000`, `0.0.0.0` | |
 | `OSRM_FOOT_URL`, `OVERPASS_URL`, `NOMINATIM_URL` | publiczne instancje | Własne instancje do produkcji |
 | `OFFICIAL_TTL_HOURS` | `72` | Jak często odświeżać dane z oficjalnych stron |
+| `RAG_EMBED_MODEL` | `BAAI/bge-multilingual-gemma2` | Model embeddingów bazy wiedzy (Sherlock); `off` – samo wyszukiwanie słów kluczowych |
+| `RAG_TTL_DAYS` | `7` | Co ile dni przebudowywać bazę wiedzy w tle |
 | `NOMI_DATA_DIR` | `data/` | Katalog na rozkłady GTFS i dane oficjalne |
 
 ## Architektura
@@ -91,13 +94,15 @@ server/
   agent/openaiCompat.js backend Sherlock / serwerów zgodnych z OpenAI: streaming, narzędzia, JSON
   agent/anthropic.js    backend Claude (Anthropic SDK)
   agent/tools.js        narzędzia agenta (JSON Schema + walidacja wejścia)
-  agent/context.js      kontekst czasu rzeczywistego dołączany do każdego pytania (pozycja, kierunek, nawigacja)
+  agent/context.js      kontekst czasu rzeczywistego dołączany do każdego pytania (pozycja, kierunek, nawigacja, preferencje)
+  agent/knowledge.js    wiedza dla agenta: automatyczny dobór fragmentów, etykiety cytowań [K1], podpowiedzi pytań
+  rag/                  baza wiedzy: sources.js (oficjalne strony), text.js (fragmenty, BM25, RRF), embed.js, index.js (budowa, wyszukiwanie)
   transit/gtfs.js       pobieranie i parsowanie GTFS (A – autobusy MPK, M – Mobilis, T – tramwaje)
   transit/router.js     wyszukiwanie połączeń: Connection Scan Algorithm z przesiadkami pieszymi
   transit/realtime.js   GTFS-Realtime: pozycje pojazdów i opóźnienia
   services/             trasy piesze (OSRM), lokale (Overpass), wyszukiwanie (Nominatim), planer zapasowy,
                         planRouting.js – trasy między punktami planu i przeliczony harmonogram,
-                        official.js – dane z oficjalnych stron
+                        official.js – dane z oficjalnych stron, events.js – kalendarz krakow.travel, weather.js – IMGW
   data/attractions.js   45 atrakcji ze sprawdzonymi faktami (podstawa opowieści – mniej konfabulacji)
   data/tickets.js       taryfa ZTP od 2.03.2026
 ```
@@ -105,7 +110,7 @@ server/
 ### API serwera
 
 `GET /api/health` · `/api/attractions` · `/api/nearby` · `/api/places?type=restaurant&lat&lon` · `/api/search?q` · `/api/route?fromlat&fromlon&tolat&tolon&mode=auto|walk|transit` · `/api/departures?lat&lon|stop` · `/api/vehicles?bbox=s,w,n,e` · `/api/tickets`
-`POST /api/chat` (SSE) · `/api/narrate` (SSE) · `/api/plan` (plan z trasami) · `/api/plan/route` (przeliczenie tras po edycji planu) · `/api/chat/reset` · `GET /api/official/:id`
+`POST /api/chat` (SSE) · `/api/narrate` (SSE) · `/api/plan` (plan z trasami) · `/api/plan/route` (przeliczenie tras po edycji planu) · `/api/chat/reset` · `GET /api/official/:id` · `GET /api/knowledge?q=` (podgląd wyszukiwania w bazie wiedzy)
 
 ## Oficjalne źródła danych
 
@@ -116,6 +121,15 @@ Godziny otwarcia, ceny biletów wstępu, zasady zwiedzania i fakty historyczne p
 - **ZTP Kraków** – rozkłady jazdy, opóźnienia, ceny biletów komunikacji.
 
 Mapa źródeł jest w `server/data/officialSources.js`. Serwer pobiera strony, czyści HTML i za pomocą modelu AI wyciąga z nich wyłącznie to, co jest w ich treści (zakaz uzupełniania z wiedzy modelu); wynik z listą źródeł i datą pobrania trafia do `data/official/`. Dane są odświeżane w tle (co `OFFICIAL_TTL_HOURS`, domyślnie 72 h; model jest wywoływany tylko, gdy treść strony się zmieniła). Ręcznie: `npm run official:refresh` (`-- --force` – wszystko od nowa, `-- barbakan mariacki` – wybrane).
+
+### Baza wiedzy (RAG)
+
+Oprócz danych strukturalnych o 45 atrakcjach NOMI ma bazę wiedzy z pełnych treści oficjalnych stron: wszystkie obiekty z przewodnika krakow.travel (zabytki, muzea, kościoły, przyroda, miejsca pamięci…) i jego artykuły praktyczne, artykuły turystyczne serwisu miejskiego krakow.pl (trasy tematyczne, poruszanie się po mieście, dojazd), strony oddziałów Muzeum Krakowa i Muzeum Narodowego, strony instytucji z `officialSources.js` i ZTP.
+
+- **Budowa** (`npm run rag:build`, w tle co `RAG_TTL_DAYS`): pobranie stron (3 naraz, z przerwami), czyszczenie HTML, podział na fragmenty ok. 900 znaków wzdłuż akapitów, embeddingi `bge-multilingual-gemma2` przez Sherlock (przy przebudowie liczone tylko dla zmienionych fragmentów). Wynik w `data/rag/` (~6 MB; wektory int8). Gdy pobierze się wyraźnie mniej stron niż poprzednio, stary indeks zostaje.
+- **Wyszukiwanie hybrydowe**: wektory (znaczenie, pytania po angielsku) + BM25 z polskim stemmingiem (nazwy własne) + dopasowanie tytułu strony, łączone metodą RRF; maks. 2 fragmenty z jednej strony.
+- **W rozmowie**: do każdego pytania serwer dobiera do 4 fragmentów powyżej progu trafności (krótkie odpowiedzi typu „chcę” łączy z ostatnią wypowiedzią NOMI). Fragmenty mają etykiety `[K1]`, `[K2]`… – NOMI cytuje je w odpowiedzi, a aplikacja zamienia je na przypisy z listą źródeł (syntezator ich nie czyta). Gdy to za mało, agent sam wywołuje `search_knowledge`.
+- **Ocena**: `npm run rag:eval` – 30 pytań turystów (PL/EN) z oczekiwanymi stronami: hit@1/3/5 i MRR dla BM25, wektorów i hybrydy oraz podobieństwo dla pytań spoza tematu (kalibracja progu). Wynik na obecnym indeksie (433 strony, 1457 fragmentów): hybryda hit@1 90%, hit@3 100%, MRR 0,94 (samo BM25: 67%, 87%, 0,78). `-- --model <nazwa>` porównuje inny model embeddingów (`e5-mistral-7b-instruct`: hit@3 47%; `stella-pl-retrieval-8k` na Sherlocku nie rozróżnia tekstów).
 
 NOMI podaje godziny i ceny tylko z tych danych i mówi, skąd pochodzą; jeśli ich brak – odsyła do oficjalnej strony. Lokale gastronomiczne nie mają oficjalnego rejestru – są wyszukiwane w OpenStreetMap, a NOMI zaznacza, że godziny warto potwierdzić na stronie lokalu.
 
@@ -132,8 +146,10 @@ Testy działają offline na atrapach serwerów AI:
   - wywołania `<tool_call>` zapisane tekstem,
   - ponowienie zapytania bez odrzuconego parametru,
   - opowieści (Bielik),
-  - planer JSON.
+  - planer JSON,
+  - baza wiedzy: fragmenty dołączone do pytania, cytaty → źródła, numeracja etykiet w sesji, `search_knowledge`.
 - **Claude:** pętla narzędzi przez prawdziwe SDK.
+- **Baza wiedzy:** podział na fragmenty, BM25 z odmianą polską, RRF i ranking hybrydowy, kwantyzacja wektorów, cytowania, zapytania dla krótkich odpowiedzi, podpowiedzi, daty wydarzeń.
 - **Pozostałe:** parser CSV/GTFS, zmiana czasu, geometria, rekomendacje biletów, walidacja narzędzi.
 
 ## Źródła danych i ograniczenia
@@ -144,4 +160,5 @@ Testy działają offline na atrapach serwerów AI:
 - Współrzędne atrakcji są przybliżone (±30 m) – można je doprecyzować w `server/data/attractions.js`.
 - Kompas w telefonach bywa niedokładny (zakłócenia magnetyczne); bez kompasu NOMI używa kierunku ruchu z GPS.
 - Głosowe komunikaty nawigacji można wyłączyć przyciskiem z głośnikiem na banerze nawigacji albo w ustawieniach (niezależnie od czytania odpowiedzi czatu).
+- Pogoda: publiczne API IMGW-PIB daje aktualny pomiar ze stacji Kraków i ostrzeżenia – bez prognozy (NOMI odsyła wtedy do meteo.imgw.pl). Wydarzenia: kalendarz krakow.travel (odświeżany co 6 h).
 - Zmiana układu oficjalnej strony może zubożyć wyciągnięte dane – po `npm run official:refresh` warto przejrzeć wynik; niedostępne strony nie nadpisują ostatnich poprawnych danych.

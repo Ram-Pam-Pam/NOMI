@@ -98,7 +98,7 @@ const RELEVANT =
   /godzin|otwar|czynn|zamkni|poniedzia|wtor|środ|czwart|piąt|sobot|niedziel|codziennie|bilet|cennik|cena|ceny|zł|wstęp|ulgow|normaln|bezpłat|rezerwac|ostatnie wejście|zwiedzan|sezon|styczn|lut|marz|kwiet|maj|czerw|lip|sierp|wrze|paździer|listopad|grud|\d{1,2}[:.]\d{2}/i;
 
 /** Z długich stron zostawia tylko linie o godzinach/cenach/zwiedzaniu (z sąsiedztwem). */
-function focusText(text, max) {
+export function focusText(text, max) {
   if (text.length <= max) return text;
   const lines = text.split("\n");
   const keep = new Set();
@@ -111,7 +111,7 @@ function focusText(text, max) {
 }
 
 /** Portal krakow.travel: tylko opis obiektu – bez menu i bloku „Polecane miejsca” (inne atrakcje). */
-function cleanGuide(text) {
+export function cleanGuide(text) {
   const end = text.search(/Podziel się|Zaplanuj pobyt|Polecane miejsca/);
   const cut = end > 0 ? text.slice(0, end) : text;
   const start = cut.search(/\nOpis\n/);

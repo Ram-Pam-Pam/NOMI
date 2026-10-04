@@ -6,8 +6,9 @@ import { getOfficial, officialText, setExtractor, withOfficial } from "../servic
 import { routePlan } from "../services/planRouting.js";
 import { simplePlan } from "../services/simplePlanner.js";
 import * as anthropic from "./anthropic.js";
-import { buildContextBlock, hasPosition } from "./context.js";
+import { buildContextBlock, detectLang, hasPosition, preferenceHint } from "./context.js";
 import { AgentError } from "./errors.js";
+import { Citations, autoKnowledge, retrievalQuery, suggestionsFor } from "./knowledge.js";
 import * as compat from "./openaiCompat.js";
 
 export { AgentError };
@@ -57,13 +58,40 @@ export function resetSession(id) {
  * Rozmowa z NOMI. Historia sesji jest tylko dopisywana – nowa tura trafia do sesji
  * dopiero po pomyślnym zakończeniu (przerwana tura nie zostawia osieroconych wywołań narzędzi).
  */
-export async function chat({ sessionId, text, ctx, emit, signal }) {
+export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
   const session = getSession(sessionId);
+  // Wskazówki tej tury: język odpowiedzi (jak w wiadomości) i wypowiedź o sobie do zapamiętania.
+  // Przy niejednoznacznej wiadomości („ok”, „tak”) – język poprzedniej wypowiedzi użytkownika, potem interfejsu.
+  const replyLang = detectLang(text) || session.lastLang || baseCtx.lang;
+  session.lastLang = replyLang;
+  const ctx = { ...baseCtx, replyLang, prefHint: preferenceHint(text) };
   if (session.busy) throw new AgentError("NOMI jeszcze odpowiada na poprzednie pytanie.", 409);
   session.busy = true;
+  const citations = new Citations(session);
+  const tools = [];
+  let answer = "";
+  const tracked = (event, data) => {
+    if (event === "text") answer += data.delta;
+    if (event === "text_break") answer += "\n\n";
+    if (event === "tool") tools.push(data.name);
+    emit(event, data);
+  };
   try {
-    const added = await backend().runChat({ history: session.messages, text, ctx, emit, signal });
+    // Wiedza z oficjalnych źródeł dobrana do pytania – agent dostaje ją od razu, bez wywołania narzędzia.
+    const knowledge = await autoKnowledge(retrievalQuery(text, session.messages), citations);
+    const added = await backend().runChat({
+      history: session.messages,
+      text,
+      ctx,
+      knowledge,
+      emit: tracked,
+      signal,
+      toolCtx: { ctx, emit: tracked, citations },
+    });
     if (added) session.messages.push(...added);
+    const sources = citations.cited(answer);
+    if (sources.length) emit("action", { type: "sources", sources });
+    emit("suggestions", { items: suggestionsFor({ tools, answer, lang: ctx.replyLang }) });
   } finally {
     session.busy = false;
     if (session.pending.length) session.messages.push(...session.pending.splice(0));

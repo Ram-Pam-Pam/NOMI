@@ -11,6 +11,7 @@ import { TICKETS } from "./data/tickets.js";
 import { nearbyAttractions } from "./services/attractions.js";
 import { officialPublic, officialSourcesFor, startOfficialService, withOfficial } from "./services/official.js";
 import { routePlan } from "./services/planRouting.js";
+import { ragStatus, searchKnowledge, startRagService } from "./rag/index.js";
 import { searchPlaces } from "./services/geocode.js";
 import { PLACE_TYPES, findPlaces } from "./services/places.js";
 import { planRoute } from "./services/routes.js";
@@ -54,7 +55,19 @@ function openSse(req, res) {
 // ------------------------------------------------------------------ status
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, ai: aiStatus(), transit: transitStatus(), time: new Date().toISOString() });
+  res.json({ ok: true, ai: aiStatus(), transit: transitStatus(), knowledge: ragStatus(), time: new Date().toISOString() });
+});
+
+// Wyszukiwanie w bazie wiedzy z oficjalnych źródeł (podgląd i diagnostyka).
+app.get("/api/knowledge", async (req, res) => {
+  const q = String(req.query.q || "").slice(0, 300);
+  if (!q.trim()) return res.status(400).json({ error: "Podaj parametr q." });
+  try {
+    const results = await searchKnowledge(q, { k: Math.min(Math.max(num(req.query.k) || 5, 1), 10) });
+    res.json({ status: ragStatus(), results: results.map(({ hash, id, ...r }) => r) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ------------------------------------------------------------------ atrakcje i miejsca
@@ -277,6 +290,7 @@ app.use((err, req, res, _next) => {
 
 startTimetableService();
 startOfficialService({ canExtract: aiStatus().keyConfigured });
+startRagService();
 
 const server = config.https
   ? https.createServer({ key: fs.readFileSync(config.https.key), cert: fs.readFileSync(config.https.cert) }, app)

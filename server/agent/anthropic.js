@@ -71,13 +71,14 @@ async function streamTurn(params, emit, signal) {
 }
 
 /** Zwraca nowe wiadomości tury (do dopisania do historii) albo null, gdy tura została odrzucona. */
-export async function runChat({ history, text, ctx, emit, signal }) {
+export async function runChat({ history, text, ctx, knowledge, emit, signal, toolCtx = { ctx, emit } }) {
   const messages = [
     ...history,
     {
       role: "user",
       content: [
         { type: "text", text: buildContextBlock(ctx) },
+        ...(knowledge ? [{ type: "text", text: knowledge }] : []),
         { type: "text", text },
       ],
     },
@@ -120,7 +121,7 @@ export async function runChat({ history, text, ctx, emit, signal }) {
     const results = await Promise.all(
       toolUses.map(async (tu) => {
         emit("tool", { id: tu.id, name: tu.name, label: TOOL_LABELS[tu.name]?.[ctx.lang] || tu.name });
-        const r = await runTool(tu.name, tu.input, { ctx, emit });
+        const r = await runTool(tu.name, tu.input, toolCtx);
         emit("tool_done", { id: tu.id, name: tu.name, ok: !r.isError });
         return { type: "tool_result", tool_use_id: tu.id, content: r.content, ...(r.isError ? { is_error: true } : {}) };
       }),

@@ -10,7 +10,9 @@
     "dev": "node --watch-path=server server/index.js",
     "test": "node --test test/*.test.js",
     "check:llm": "node scripts/check-llm.js",
-    "official:refresh": "node scripts/refresh-official.js"
+    "official:refresh": "node scripts/refresh-official.js",
+    "rag:build": "node scripts/rag-build.js",
+    "rag:eval": "node scripts/rag-eval.js"
   },
   "engines": {
     "node": ">=20.12"

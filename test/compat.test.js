@@ -48,6 +48,15 @@ before(async () => {
       closed: [], last_entry: "", prices: [{ ticket: "normalny", price: "22 zł" }], free_entry: "", booking: "", notes: [],
     }),
   );
+  // Mała baza wiedzy (bez wektorów – samo BM25, więc bez wywołań /embeddings).
+  fs.mkdirSync(path.join(dataDir, "rag"));
+  const kb = [
+    ["https://muzeumkrakowa.pl/oddzialy/barbakan", "Barbakan", "Muzeum Krakowa", "Barbakan – wstęp: bilet normalny kosztuje 22 zł, ulgowy 16 zł. Czynne od wtorku do niedzieli."],
+    ["https://krakow.travel/17793-krakow-kopiec-kosciuszki", "Kopiec Kościuszki", "krakow.travel – oficjalny portal turystyczny Krakowa", "Kopiec usypano w latach 1820–1823 na wzgórzu Sikornik ku czci Tadeusza Kościuszki."],
+    ["https://krakow.travel/6-krakow-smocza-jama", "Smocza Jama", "krakow.travel – oficjalny portal turystyczny Krakowa", "Według legendy w jaskini pod Wawelem mieszkał smok, którego pokonał szewczyk Skuba podstępem z baranem wypchanym siarką."],
+  ].map(([url, title, source, text], i) => ({ id: `t-${i}`, url, title, source, text, fetched: "2026-10-04", hash: `h${i}` }));
+  fs.writeFileSync(path.join(dataDir, "rag", "chunks.json"), JSON.stringify(kb));
+  fs.writeFileSync(path.join(dataDir, "rag", "meta.json"), JSON.stringify({ model: null, dim: 0, docs: 3, count: 3, builtAt: new Date().toISOString() }));
   Object.assign(process.env, {
     NOMI_SKIP_DOTENV: "1",
     LLM_PROVIDER: "sherlock",
@@ -238,4 +247,45 @@ test("opowieść zakończona w trakcie odpowiedzi czatu jest dopisywana po niej 
     assert.equal(msgs[i].role, role, `wiadomość ${i}`);
     assert.match(msgs[i].content, re, `wiadomość ${i}`);
   });
+});
+
+test("baza wiedzy: fragmenty dołączone do pytania, cytat [K…] → źródło dla aplikacji, podpowiedzi", async () => {
+  const { chat, ctx } = await load();
+  requests.length = 0;
+  replies = [(b, res) => stream(res, [chunk({ content: "Bilet normalny do Barbakanu kosztuje 22 zł [K1]. Poprowadzić cię tam?" }, "stop")])];
+  const c = collector();
+  await chat({ sessionId: "s-kb", text: "Ile kosztuje wstęp do Barbakanu?", ctx, emit: c.emit, signal: new AbortController().signal });
+
+  const user = requests[0].body.messages.at(-1).content;
+  assert.match(user, /<wiedza_z_oficjalnych_zrodel>[\s\S]*\[K1\] Barbakan — Muzeum Krakowa \(pobrano 2026-10-04\)[\s\S]*22 zł/);
+  assert.match(user, /Ile kosztuje wstęp do Barbakanu\?$/, "pytanie na końcu wiadomości");
+  assert.ok(!/Smocza Jama/.test(user), "nietrafne fragmenty pominięte");
+  assert.ok(requests[0].body.tools.some((t) => t.function.name === "search_knowledge"));
+
+  const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
+  assert.deepEqual(sources?.map((s) => [s.label, s.url]), [["K1", "https://muzeumkrakowa.pl/oddzialy/barbakan"]]);
+  const sugg = c.events.find((e) => e.type === "suggestions")?.data.items;
+  assert.deepEqual(sugg?.slice(0, 2), ["Tak", "Nie, dzięki"]);
+});
+
+test("baza wiedzy: narzędzie search_knowledge kontynuuje numerację etykiet w sesji", async () => {
+  const { chat, ctx } = await load();
+  requests.length = 0;
+  replies = [
+    (b, res) =>
+      stream(res, [
+        chunk({ tool_calls: [{ index: 0, id: "call_kb", type: "function", function: { name: "search_knowledge", arguments: '{"query": "Smocza Jama legenda smok"}' } }] }, "tool_calls"),
+      ]),
+    // Odpowiedź cytuje etykietę nadaną przez narzędzie (po etykietach automatycznie dołączonej wiedzy).
+    (b, res) => stream(res, [chunk({ content: `Smoka pokonał szewczyk Skuba [${JSON.parse(b.messages.at(-1).content).results[0].label}].` }, "stop")]),
+  ];
+  const c = collector();
+  await chat({ sessionId: "s-kb", text: "A co z tym smokiem?", ctx, emit: c.emit, signal: new AbortController().signal });
+
+  const tool = JSON.parse(requests[1].body.messages.at(-1).content);
+  const auto = requests[0].body.messages.at(-1).content.match(/^\[K\d+\]/gm) || [];
+  assert.equal(tool.results[0].label, `K${2 + auto.length}`, "numeracja kontynuowana po K1 z poprzedniej tury");
+  assert.equal(tool.results[0].title, "Smocza Jama");
+  const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
+  assert.deepEqual(sources?.map((s) => s.title), ["Smocza Jama"]);
 });

@@ -96,6 +96,7 @@ export function unlockSpeech() {
 export function cleanForSpeech(text) {
   return String(text)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\s?\[K\d+(?:\s*[,;]\s*K?\d+)*\]/g, "")
     .replace(/[*_`#>]/g, "")
     .replace(/^\s*[-•]\s+/gm, "")
     .replace(/→|->/g, ", ")

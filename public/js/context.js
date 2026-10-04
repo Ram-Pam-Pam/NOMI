@@ -16,6 +16,7 @@ export function buildContext() {
     nav: navSummary(),
     recentNarrations: state.recentNarrations.slice(-5).map((r) => r.id),
     plan: (state.plan?.stops || []).filter((s) => !s.done).map((s) => `${s.start_time || ""} ${s.name}`.trim()),
+    prefs: state.prefs,
     onVehicle: state.onVehicle ? { line: state.onVehicle.line, mode: state.onVehicle.mode } : null,
   };
 }

@@ -46,17 +46,21 @@ async function overpass(query) {
   }
 }
 
-export async function findPlaces({ type = "restaurant", lat, lon, radius = 600, limit = 8, cuisine, query }) {
+export const DIETS = ["vegetarian", "vegan", "gluten_free", "halal", "kosher"];
+
+export async function findPlaces({ type = "restaurant", lat, lon, radius = 600, limit = 8, cuisine, query, diet }) {
   const filter = PLACE_TYPES[type];
   if (!filter) throw new Error(`Nieznany typ miejsca: ${type}`);
   radius = Math.min(Math.max(Number(radius) || 600, 50), 3000);
-  const key = `${type}|${lat.toFixed(3)}|${lon.toFixed(3)}|${radius}|${cuisine || ""}|${query || ""}`;
+  const key = `${type}|${lat.toFixed(3)}|${lon.toFixed(3)}|${radius}|${cuisine || ""}|${query || ""}|${diet || ""}`;
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL) return hit.data.slice(0, limit);
 
   let extra = "";
   if (cuisine) extra += `["cuisine"~"${escapeRegex(cuisine)}",i]`;
   if (query) extra += `["name"~"${escapeRegex(query)}",i]`;
+  // Dieta wg tagów OSM diet:* (yes = są takie dania, only = wyłącznie).
+  if (DIETS.includes(diet)) extra += `["diet:${diet}"~"^(yes|only)$"]`;
   const named = ["restaurant", "cafe", "bar", "fast_food", "ice_cream", "bakery", "attraction", "historic", "church"].includes(type)
     ? '["name"]'
     : "";

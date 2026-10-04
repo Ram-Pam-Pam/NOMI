@@ -5,7 +5,7 @@ import { MODE_EMOJI, escapeHtml, fmtClock, fmtMinutes, renderMarkdown } from "./
 import { t } from "./i18n.js";
 import { showPlaces } from "./map.js";
 import { presentRoute, renderPlaceList } from "./mapui.js";
-import { emit, newSession, on, sessionId, state, store } from "./state.js";
+import { emit, newSession, on, sessionId, setPref, state, store } from "./state.js";
 import { toast } from "./ui.js";
 import {
   flushSpeech,
@@ -95,8 +95,57 @@ function renderHistory() {
   addNomiStatic(t("welcome"), { save: false });
   for (const m of history) {
     if (m.role === "user") addUser(m.text, { save: false });
-    else addNomiStatic(m.text, { save: false, narration: m.narration });
+    else addNomiStatic(m.text, { save: false, narration: m.narration, sources: m.sources });
   }
+  scrollDown();
+}
+
+// ------------------------------------------------ przypisy do oficjalnych źródeł
+
+// Etykiety cytowań [K3], [K3, K5], [K3][K5]; model bywa, że wymyśli inną literę ([C2]) – takie też usuwamy.
+const CITE_RE = /\s?\[([A-Z]\d+(?:\s*[,;]\s*[A-Z]?\d+)*)\]/g;
+
+/** Odpowiedź z etykietami [K3] → przypisy z linkami do oficjalnych stron (bez źródeł – etykiety znikają). */
+function renderAnswer(raw, sources) {
+  if (!sources?.length) return renderMarkdown(String(raw).replace(CITE_RE, ""));
+  // Kilka fragmentów tej samej strony = jeden przypis.
+  const unique = [];
+  const index = new Map();
+  for (const s of sources) {
+    let n = unique.findIndex((u) => u.url === s.url) + 1;
+    if (!n) n = unique.push(s);
+    index.set(s.label, n);
+  }
+  const marked = String(raw).replace(CITE_RE, (_, labels) => {
+    const nums = [...new Set([...labels.matchAll(/K(\d+)/g)].map((m) => index.get(`K${m[1]}`)).filter(Boolean))];
+    return nums.map((n) => `\u0001${n}\u0002`).join("");
+  }).replace(/(\u0001\d+\u0002)\1+/g, "$1"); // [K3][K4] z tej samej strony → jeden przypis
+  const html = renderMarkdown(marked).replace(/(?:\u0001(\d+)\u0002)/g, (_, n) => {
+    const s = unique[n - 1];
+    return `<sup class="cite"><a href="${escapeHtml(s.url)}" target="_blank" rel="noopener" title="${escapeHtml(s.title)}">${n}</a></sup>`;
+  });
+  const list = unique
+    .map(
+      (s) =>
+        `<li><a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title || s.url)}</a> <span>· ${escapeHtml(s.source)}${s.fetched ? ` · ${escapeHtml(s.fetched)}` : ""}</span></li>`,
+    )
+    .join("");
+  return `${html}<div class="sources"><b>${t("sources")}</b><ol>${list}</ol></div>`;
+}
+
+// ------------------------------------------------ podpowiedzi kolejnych pytań
+
+function clearFollowups() {
+  $("chat").querySelectorAll(".followups").forEach((el) => el.remove());
+}
+
+function renderFollowups(msgEl, items) {
+  clearFollowups();
+  if (!items?.length) return;
+  const box = document.createElement("div");
+  box.className = "followups chips small";
+  box.innerHTML = items.map((s) => `<button class="chip" type="button" data-followup="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join("");
+  msgEl.after(box);
   scrollDown();
 }
 
@@ -137,10 +186,10 @@ function nomiShell({ narration = false, title = "" } = {}) {
   return el;
 }
 
-function addNomiStatic(text, { save = true, narration = false } = {}) {
+function addNomiStatic(text, { save = true, narration = false, sources } = {}) {
   const el = nomiShell({ narration });
   el.dataset.raw = text;
-  el.querySelector(".body").innerHTML = renderMarkdown(text);
+  el.querySelector(".body").innerHTML = renderAnswer(text, sources);
   if (save) {
     history.push({ role: "nomi", text, narration });
     saveHistory();
@@ -149,6 +198,11 @@ function addNomiStatic(text, { save = true, narration = false } = {}) {
 }
 
 function onChatClick(e) {
+  const follow = e.target.closest("[data-followup]");
+  if (follow) {
+    if (!controller) send(follow.dataset.followup);
+    return;
+  }
   const speakBtn = e.target.closest(".speak");
   if (speakBtn) {
     const raw = speakBtn.closest(".msg").dataset.raw || speakBtn.closest(".msg").querySelector(".body").textContent;
@@ -209,6 +263,7 @@ export async function send(text, { voice = false } = {}) {
   unlockSpeech();
   stopSpeaking();
   lastWasVoice = voice;
+  clearFollowups();
   addUser(text);
   const msgEl = nomiShell();
   const bodyEl = msgEl.querySelector(".body");
@@ -221,8 +276,10 @@ export async function send(text, { voice = false } = {}) {
   let raw = "";
   let roundStart = 0;
   let failed = false;
+  let sources = null;
+  let followups = null;
   const render = () => {
-    bodyEl.innerHTML = renderMarkdown(raw) || '<span class="typing"><i></i><i></i><i></i></span>';
+    bodyEl.innerHTML = renderAnswer(raw, sources) || '<span class="typing"><i></i><i></i><i></i></span>';
     msgEl.dataset.raw = raw;
     scrollDown();
   };
@@ -265,6 +322,14 @@ export async function send(text, { voice = false } = {}) {
             if (data.type === "route") routeCard(msgEl, data.route);
             if (data.type === "markers") placesCard(msgEl, data.places);
             if (data.type === "plan_add") emit("plan-add", data.item);
+            if (data.type === "sources") sources = data.sources;
+            if (data.type === "pref") {
+              setPref(data.key, data.value);
+              toast(data.value ? `🧠 ${t("prefSaved")}: ${data.value}` : `🧠 ${t("prefForgot")}`);
+            }
+            break;
+          case "suggestions":
+            followups = data.items;
             break;
           case "notice":
             toast(data.message);
@@ -292,8 +357,9 @@ export async function send(text, { voice = false } = {}) {
     if (!raw) raw = "…";
     render();
     if (!failed) {
-      history.push({ role: "nomi", text: raw });
+      history.push({ role: "nomi", text: raw, ...(sources ? { sources } : {}) });
       saveHistory();
+      renderFollowups(msgEl, followups);
     }
   }
 }

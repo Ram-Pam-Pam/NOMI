@@ -3,13 +3,16 @@ import { attractionById } from "../data/attractions.js";
 import { TICKETS, recommendTicket } from "../data/tickets.js";
 import { angleDiff, relativeDirection } from "../geo.js";
 import { attractionsInView, nearbyAttractions, withGeometry } from "../services/attractions.js";
+import { findEvents } from "../services/events.js";
 import { resolvePlace, searchPlaces } from "../services/geocode.js";
 import { officialPublic, officialSourcesFor } from "../services/official.js";
-import { PLACE_TYPES, findPlaces } from "../services/places.js";
+import { DIETS, PLACE_TYPES, findPlaces } from "../services/places.js";
 import { planRoute, summarizeRoute } from "../services/routes.js";
-import { fmtClock } from "../time.js";
+import { getWeather } from "../services/weather.js";
+import { addDays, fmtClock, localYmd } from "../time.js";
 import { nextDepartures } from "../transit/index.js";
-import { hasPosition } from "./context.js";
+import { PREF_KEYS, hasPosition } from "./context.js";
+import { knowledgeTool, snippetFor } from "./knowledge.js";
 
 const RYNEK = { lat: 50.0617, lon: 19.9373, name: "Rynek Główny" };
 const TAGS = ["history", "architecture", "art", "museums", "churches", "jewish", "views", "nature", "food", "nightlife", "kids", "ww2", "university"];
@@ -24,6 +27,10 @@ export const TOOL_LABELS = {
   search_place: { pl: "Szukam miejsca", en: "Looking up the place" },
   show_on_map: { pl: "Pokazuję na mapie", en: "Showing on the map" },
   add_to_plan: { pl: "Dodaję do planu", en: "Adding to your plan" },
+  search_knowledge: { pl: "Szukam w oficjalnych źródłach", en: "Searching official sources" },
+  get_events: { pl: "Sprawdzam wydarzenia", en: "Checking events" },
+  get_weather: { pl: "Sprawdzam pogodę", en: "Checking the weather" },
+  remember_preference: { pl: "Zapamiętuję", en: "Remembering" },
 };
 
 const point = {
@@ -75,7 +82,8 @@ export const TOOLS = [
       type: "object",
       properties: {
         type: { type: "string", enum: Object.keys(PLACE_TYPES), description: "Rodzaj miejsca." },
-        cuisine: { type: "string", description: "Filtr kuchni wg tagu OSM, np. polish, pizza, italian, vegan, sushi, burger, coffee_shop." },
+        cuisine: { type: "string", description: "Filtr kuchni wg tagu OSM, np. polish, pizza, italian, sushi, burger, coffee_shop." },
+        diet: { type: "string", enum: DIETS, description: "Tylko lokale oznaczone w OSM jako oferujące dania dla tej diety (pola vegetarian/vegan w wyniku: yes = są takie dania, only = wyłącznie). Użyj dla preferencji dietetycznych zamiast cuisine." },
         name: { type: "string", description: "Fragment nazwy lokalu." },
         near: { type: "string", description: "Nazwa miejsca, wokół którego szukać (domyślnie pozycja użytkownika)." },
         radius_m: { type: "integer", description: "Promień w metrach, domyślnie 600, maks. 3000." },
@@ -165,6 +173,57 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "search_knowledge",
+    description:
+      "Przeszukuje bazę wiedzy NOMI zbudowaną z oficjalnych stron: krakow.travel (oficjalny portal turystyczny miasta – zabytki, muzea, historia, legendy, porady praktyczne), krakow.pl (serwis miejski – trasy tematyczne, informacje dla turystów), strony muzeów i instytucji (godziny, ceny, zasady zwiedzania) i ZTP (komunikacja). Użyj, gdy blok <wiedza_z_oficjalnych_zrodel> nie odpowiada na pytanie albo go nie ma. Zapytanie formułuj konkretnie: nazwa obiektu + czego szukasz (np. „Sukiennice Rynek Podziemny bilety”). Zwraca fragmenty z etykietami [K…] do cytowania.",
+    input_schema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Zapytanie po polsku lub angielsku." },
+        limit: { type: "integer", description: "Liczba fragmentów (domyślnie 4, maks. 6)." },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_events",
+    description:
+      "Wydarzenia w Krakowie (koncerty, festiwale, wystawy, inne) z oficjalnego kalendarza krakow.travel. Domyślnie od dziś przez 7 dni. Zwraca nazwę, termin, kategorię, krótki opis i link.",
+    input_schema: {
+      type: "object",
+      properties: {
+        date_from: { type: "string", description: "Od dnia (YYYY-MM-DD), domyślnie dziś." },
+        date_to: { type: "string", description: "Do dnia włącznie (YYYY-MM-DD), domyślnie dziś + 6 dni." },
+        category: { type: "string", enum: ["koncert", "festiwal", "wystawa", "inne"] },
+        query: { type: "string", description: "Słowo w nazwie lub opisie (np. jazz, film)." },
+        limit: { type: "integer", description: "Maks. liczba wyników (domyślnie 8)." },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_weather",
+    description:
+      "Aktualna pogoda w Krakowie z IMGW-PIB (pomiar ze stacji synoptycznej: temperatura, wiatr, opad, wilgotność) i obowiązujące ostrzeżenia meteorologiczne dla Krakowa. Prognozy nie ma w publicznym API IMGW.",
+    input_schema: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "remember_preference",
+    description:
+      "Zapamiętuje w aplikacji trwałą preferencję użytkownika, by uwzględniać ją w kolejnych rozmowach i planach: dieta (także alergie pokarmowe), zainteresowania, poruszanie się (np. wózek, wózek dziecięcy, unikanie schodów), budżet, z kim zwiedza. Użyj, gdy użytkownik mówi o sobie coś ważnego na przyszłość. Ustaw forget=true, gdy prosi o zapomnienie.",
+    input_schema: {
+      type: "object",
+      properties: {
+        key: { type: "string", enum: PREF_KEYS },
+        value: { type: "string", description: "Krótko, w języku użytkownika (maks. 120 znaków), np. „wegetariańska”." },
+        forget: { type: "boolean" },
+      },
+      required: ["key"],
+      additionalProperties: false,
+    },
+  },
 ].map((t) => ({ ...t, eager_input_streaming: true }));
 
 // ------------------------------------------------------------------ walidacja
@@ -233,13 +292,20 @@ function officialFor(a) {
 }
 
 const handlers = {
-  async find_attractions(input, { ctx }) {
+  async find_attractions(input, { ctx, citations }) {
     const lang = ctx.lang;
     if (input.attraction_id) {
       const a = attractionById.get(input.attraction_id);
       if (!a) return { error: `Nie ma atrakcji o id ${input.attraction_id}` };
       const base = hasPosition(ctx) ? withGeometry(a, ctx.lat, ctx.lon, ctx.heading, lang) : { id: a.id, name: a.name[lang] };
-      return { ...base, typical_visit_min: a.visitMin, district: a.district, ...officialFor(a) };
+      const official = officialFor(a);
+      // Bez pobranych danych strukturalnych – fragmenty oficjalnych stron tej atrakcji z bazy wiedzy.
+      if (!official.official && citations) {
+        const urls = officialSourcesFor(a.id);
+        const kb = urls.length ? await knowledgeTool(a.name.pl, citations, { limit: 3, urls }).catch(() => null) : null;
+        if (kb?.results?.length) official.knowledge = kb.results;
+      }
+      return { ...base, typical_visit_min: a.visitMin, district: a.district, ...official };
     }
     const origin = await originFor(input.near, ctx);
     const list = nearbyAttractions({
@@ -262,7 +328,7 @@ const handlers = {
     };
   },
 
-  async look_around(input, { ctx }) {
+  async look_around(input, { ctx, citations }) {
     if (!hasPosition(ctx)) return { error: "Brak lokalizacji użytkownika – poproś o włączenie GPS." };
     const maxDistance = clamp(input.max_distance_m, 30, 600, 250);
     const lang = ctx.lang;
@@ -292,6 +358,14 @@ const handlers = {
           description: p.description,
           source: "OpenStreetMap",
         }));
+      if (citations) {
+        await Promise.all(
+          osm.slice(0, 3).map(async (p) => {
+            const k = await snippetFor(p.name, citations).catch(() => null);
+            if (k) p.official_knowledge = k;
+          }),
+        );
+      }
     } catch (err) {
       osm = [{ error: `OpenStreetMap niedostępny: ${err.message}` }];
     }
@@ -317,6 +391,7 @@ const handlers = {
         limit: clamp(input.limit, 1, 15, 6),
         cuisine: input.cuisine,
         query: input.name,
+        diet: input.diet,
       });
     } catch (err) {
       // Awaria usługi to nie to samo co „brak lokali” – model musi to odróżnić.
@@ -418,6 +493,51 @@ const handlers = {
   async add_to_plan(input, { emit }) {
     emit("action", { type: "plan_add", item: input });
     return { added: input.name };
+  },
+
+  async search_knowledge(input, { citations }) {
+    if (!citations) return { error: "Baza wiedzy niedostępna w tym trybie." };
+    return knowledgeTool(input.query, citations, { limit: clamp(input.limit, 1, 6, 4) });
+  },
+
+  async get_events(input, { citations }) {
+    const iso = (ymd) => `${ymd.slice(0, 4)}-${ymd.slice(4, 6)}-${ymd.slice(6, 8)}`;
+    const valid = (d) => (/^\d{4}-\d{2}-\d{2}$/.test(d || "") ? d : null);
+    const from = valid(input.date_from) || iso(localYmd());
+    const to = valid(input.date_to) || iso(addDays(from.replaceAll("-", ""), 6));
+    try {
+      const r = await findEvents({ from, to, query: input.query, category: input.category, limit: clamp(input.limit, 1, 10, 6), withDetails: true });
+      const source = "krakow.travel – oficjalny kalendarz wydarzeń";
+      // Każde wydarzenie z etykietą [K…] – w aplikacji staje się przypisem z linkiem do strony wydarzenia.
+      const fetched = r.fetchedAt.slice(0, 10);
+      const labeled = citations ? citations.label(r.events.map((e) => ({ ...e, source, fetched }))) : r.events;
+      return {
+        source,
+        range: { from, to },
+        total: r.total,
+        events: labeled.map(({ label, title, when, category, details, caption }) => ({ label, title, when, category, details: details || caption })),
+        note: r.total
+          ? "Opisuj wydarzenia WYŁĄCZNIE na podstawie pól when i details (miejsce, program, ceny – tylko jeśli tam są). Po nazwie wydarzenia dodaj jego etykietę, np. [K5] – aplikacja pokaże link do strony wydarzenia."
+          : "Brak wydarzeń w oficjalnym kalendarzu w tym terminie.",
+      };
+    } catch (err) {
+      return { error: `Kalendarz wydarzeń krakow.travel jest chwilowo niedostępny (${err.message}). Nie wymyślaj wydarzeń.` };
+    }
+  },
+
+  async get_weather() {
+    try {
+      return await getWeather();
+    } catch (err) {
+      return { error: `Dane IMGW są chwilowo niedostępne (${err.message}). Nie zgaduj pogody.` };
+    }
+  },
+
+  async remember_preference(input, { emit }) {
+    const value = String(input.value || "").trim().slice(0, 120);
+    if (!input.forget && !value) return { error: "Podaj value albo forget=true." };
+    emit("action", { type: "pref", key: input.key, value: input.forget ? null : value });
+    return input.forget ? { forgotten: input.key } : { saved: { [input.key]: value } };
   },
 };
 

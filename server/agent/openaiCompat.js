@@ -3,6 +3,7 @@
 import { config } from "../config.js";
 import { buildContextBlock } from "./context.js";
 import { AgentError } from "./errors.js";
+import { KNOWLEDGE_TAG } from "./knowledge.js";
 import { NARRATOR_SYSTEM, NOMI_SYSTEM, PLANNER_SYSTEM } from "./prompts.js";
 import { TOOLS, TOOL_LABELS, runTool } from "./tools.js";
 
@@ -38,6 +39,7 @@ const OPTIONAL = {
   temperature: /temperature/i,
 };
 const rejected = new Map(); // model -> Set(parametr)
+const RETRY_STATUS = [429, 502, 503, 504];
 
 async function post(body, signal) {
   if (!cfg().apiKey) throw new AgentError("Brak klucza API modelu AI – ustaw LLM_API_KEY w pliku .env.", 503);
@@ -61,10 +63,17 @@ async function request(body, signal) {
   };
   for (const key of skip) strip(key);
 
-  for (let attempt = 0; ; attempt++) {
+  for (let attempt = 0, busy = 0; ; attempt++) {
     try {
       return await post(payload, signal);
     } catch (err) {
+      // Przeciążony serwer (429/5xx) – ponawiamy, zanim zacznie się strumień odpowiedzi.
+      if (err instanceof ProviderError && RETRY_STATUS.includes(err.status) && busy < 2 && !signal?.aborted) {
+        busy++;
+        console.warn(`[ai] ${body.model}: HTTP ${err.status} – ponawiam (${busy}/2).`);
+        await new Promise((r) => setTimeout(r, 1200 * busy));
+        continue;
+      }
       if (!(err instanceof ProviderError) || err.status !== 400 || attempt >= 3) throw err;
       const present = Object.keys(OPTIONAL).filter((k) => k in payload);
       const culprit = present.find((k) => OPTIONAL[k].test(err.body));
@@ -211,10 +220,20 @@ async function consumeStream(res, emit) {
   return { text: text.trim(), toolCalls: calls, finish };
 }
 
+const KNOWLEDGE_RE = new RegExp(`<${KNOWLEDGE_TAG}>[\\s\\S]*?</${KNOWLEDGE_TAG}>`, "g");
+const KEEP_KNOWLEDGE_TURNS = 2;
+
+/** Ostatnie tury rozmowy; wiedza dołączona do starszych pytań jest skracana (oszczędność okna kontekstu). */
 function trimHistory(history) {
   const starts = [];
   history.forEach((m, i) => m.role === "user" && starts.push(i));
-  return starts.length <= HISTORY_TURNS ? history : history.slice(starts[starts.length - HISTORY_TURNS]);
+  const from = starts.length <= HISTORY_TURNS ? 0 : starts[starts.length - HISTORY_TURNS];
+  const keepFrom = starts[starts.length - KEEP_KNOWLEDGE_TURNS] ?? 0;
+  return history.slice(from).map((m, j) =>
+    m.role === "user" && from + j < keepFrom && typeof m.content === "string" && m.content.includes(`<${KNOWLEDGE_TAG}>`)
+      ? { ...m, content: m.content.replace(KNOWLEDGE_RE, `<${KNOWLEDGE_TAG}>(pominięto – starsza tura)</${KNOWLEDGE_TAG}>`) }
+      : m,
+  );
 }
 
 function withReasoning(model, effort) {
@@ -224,9 +243,9 @@ function withReasoning(model, effort) {
 // ------------------------------------------------------------------ rozmowa
 
 /** Zwraca nowe wiadomości tury (format OpenAI) do dopisania do historii sesji. */
-export async function runChat({ history, text, ctx, emit, signal }) {
+export async function runChat({ history, text, ctx, knowledge, emit, signal, toolCtx = { ctx, emit } }) {
   const model = cfg().chatModel;
-  const added = [{ role: "user", content: `${buildContextBlock(ctx)}\n\n${text}` }];
+  const added = [{ role: "user", content: [buildContextBlock(ctx), knowledge, text].filter(Boolean).join("\n\n") }];
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const res = await request(
@@ -259,7 +278,7 @@ export async function runChat({ history, text, ctx, emit, signal }) {
         emit("tool", { id: c.id, name: c.name, label: TOOL_LABELS[c.name]?.[ctx.lang] || c.name });
         let r;
         try {
-          r = await runTool(c.name, JSON.parse(c.arguments || "{}"), { ctx, emit });
+          r = await runTool(c.name, JSON.parse(c.arguments || "{}"), toolCtx);
         } catch {
           r = { isError: true, content: JSON.stringify({ INVALID_JSON: c.arguments }) };
         }
