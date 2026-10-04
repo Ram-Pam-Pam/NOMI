@@ -48,6 +48,27 @@ before(async () => {
       closed: [], last_entry: "", prices: [{ ticket: "normalny", price: "22 zł" }], free_entry: "", booking: "", notes: [],
     }),
   );
+  // Migawka miejsc z OSM (apteki, bankomaty) – wyszukiwanie bez sieci.
+  fs.mkdirSync(path.join(dataDir, "osm"));
+  fs.writeFileSync(
+    path.join(dataDir, "osm", "services.json"),
+    JSON.stringify({
+      fetchedAt: Date.now(),
+      places: {
+        pharmacy: [
+          { id: "node/1", name: "Apteka Pod Złotym Tygrysem", type: "pharmacy", lat: 50.0612, lon: 19.9380 },
+          { id: "node/2", name: "Apteka Daleka", type: "pharmacy", lat: 50.09, lon: 19.99 },
+        ],
+        toilets: [],
+        money: [
+          { id: "node/3", name: "Bankomat PKO", kind: "bankomat", type: "money", lat: 50.0615, lon: 19.9370 },
+          { id: "node/4", name: "Kantor", kind: "kantor", type: "money", lat: 50.0616, lon: 19.9371 },
+        ],
+        ticket_machine: [],
+        tourist_info: [],
+      },
+    }),
+  );
   // Mała baza wiedzy (bez wektorów – samo BM25, więc bez wywołań /embeddings).
   fs.mkdirSync(path.join(dataDir, "rag"));
   const kb = [
@@ -426,4 +447,17 @@ test("„Co jest przede mną?” – oficjalne informacje o atrakcji w polu widz
   assert.match(requests[0].body.messages.at(-1).content, /Ogród Botaniczny UJ – oficjalne informacje[\s\S]*Najstarszy ogród botaniczny w Polsce/);
   const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
   assert.ok(sources?.some((s) => s.url.startsWith("https://ogrod.uj.edu.pl")));
+});
+
+
+test("miejsca z migawki OSM na dysku – bez zapytań do Overpass, bankomaty wydzielone z grupy money", async () => {
+  const { startPlacesService, findPlaces, placesStatus } = await import("../server/services/places.js");
+  await startPlacesService();
+  const ph = await findPlaces({ type: "pharmacy", lat: 50.0617, lon: 19.9373, radius: 600 });
+  assert.deepEqual(ph.map((p) => p.name), ["Apteka Pod Złotym Tygrysem"], "daleka apteka poza promieniem");
+  assert.ok(ph[0].distance > 0 && ph[0].distance < 100);
+  const atm = await findPlaces({ type: "atm", lat: 50.0617, lon: 19.9373, radius: 600 });
+  assert.deepEqual(atm.map((p) => p.name), ["Bankomat PKO"]);
+  assert.equal(atm[0].type, "atm");
+  assert.equal(placesStatus().snapshots.services.places, 4);
 });

@@ -99,8 +99,9 @@ a { color: inherit; text-underline-offset: 2px; }
   display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; flex: none;
   background: var(--ink); color: var(--surface); font-weight: 700; font-size: 0.95rem;
 }
-.brand-mark { position: relative; }
-.brand-mark::after { content: ""; position: absolute; right: -2px; top: -2px; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); border: 2px solid var(--surface); }
+/* Logo: kreska w kolorze tekstu znaku, kropka celu w kolorze akcentu. */
+.logo { display: block; width: 72%; height: 72%; }
+.logo .logo-dot { fill: var(--logo-dot, var(--accent)); }
 .brand-text { min-width: 0; }
 .brand-name { font-weight: 700; letter-spacing: 0.14em; font-size: 0.9rem; line-height: 1.1; }
 .brand-sub { font-size: 0.72rem; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -147,10 +148,11 @@ body.navigating main#views { top: calc(var(--topbar-h) + env(safe-area-inset-top
   transition: color 0.15s;
 }
 .tab .i { width: 22px; height: 22px; }
-.tab .tab-nomi { width: 24px; height: 24px; border-radius: 8px; font-size: 0.78rem; background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1.7px currentColor; }
+.tab .tab-nomi { width: 24px; height: 24px; border-radius: 8px; background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1.7px currentColor; --logo-dot: currentColor; }
+.tab .tab-nomi .logo { width: 80%; height: 80%; }
 .tab.active { color: var(--ink); }
 .tab.active .i { stroke-width: 2.1; }
-.tab.active .tab-nomi { background: var(--ink); color: var(--surface); box-shadow: none; }
+.tab.active .tab-nomi { background: var(--ink); color: var(--surface); box-shadow: none; --logo-dot: var(--accent); }
 .tab.active::before { content: ""; position: absolute; top: 0; left: 50%; width: 24px; height: 2px; margin-left: -12px; border-radius: 0 0 2px 2px; background: var(--accent); }
 
 /* ------------------------------------------------ karty, przyciski, chipy */
@@ -528,7 +530,8 @@ body.story-active .nav-meta { display: none; }
 .msg.user { align-self: flex-end; background: var(--primary); color: var(--primary-ink); padding: 10px 14px; border-radius: 18px 18px 6px 18px; }
 .msg.nomi { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-radius: 6px 18px 18px 18px; padding: 12px 14px; }
 .msg.nomi .who { display: flex; align-items: center; gap: 7px; font-size: 0.74rem; font-weight: 600; color: var(--ink-2); margin-bottom: 6px; }
-.msg.nomi .who .avatar { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; background: var(--ink); color: var(--surface); font-size: 0.66rem; font-weight: 700; }
+.msg.nomi .who .avatar { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; background: var(--ink); color: var(--surface); }
+.msg.nomi .who .avatar .logo { width: 82%; height: 82%; }
 .msg.nomi .who .kind { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 600; }
 .msg.nomi .who .kind .i { width: 14px; height: 14px; }
 .msg.nomi .who .speak { margin-left: auto; width: 28px; height: 28px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); display: grid; place-items: center; }

@@ -70,6 +70,8 @@ export const config = {
 
   osrmFoot: env.OSRM_FOOT_URL || "https://routing.openstreetmap.de/routed-foot",
   overpass: env.OVERPASS_URL || "https://overpass-api.de/api/interpreter",
+  // Kilka serwerów Overpass po przecinku (pierwszy odpowiadający wygrywa); puste = publiczny + zapasowe.
+  overpassUrls: (env.OVERPASS_URLS || "").split(",").map((s) => s.trim()).filter(Boolean),
   nominatim: env.NOMINATIM_URL || "https://nominatim.openstreetmap.org",
 
   // Granice obszaru wyszukiwania (Kraków + okolice)

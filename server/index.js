@@ -13,7 +13,7 @@ import { officialPublic, officialSourcesFor, startOfficialService, withOfficial 
 import { routePlan } from "./services/planRouting.js";
 import { ragStatus, searchKnowledge, startRagService } from "./rag/index.js";
 import { searchPlaces } from "./services/geocode.js";
-import { PLACE_TYPES, findPlaces, warmArea } from "./services/places.js";
+import { PLACE_TYPES, findPlaces, placesStatus, startPlacesService, warmArea } from "./services/places.js";
 import { planRoute } from "./services/routes.js";
 import { localYmd } from "./time.js";
 import { nextDepartures, realtime, startTimetableService, transitStatus, vehiclesNear } from "./transit/index.js";
@@ -55,7 +55,7 @@ function openSse(req, res) {
 // ------------------------------------------------------------------ status
 
 app.get("/api/health", (req, res) => {
-  res.json({ ok: true, ai: aiStatus(), transit: transitStatus(), knowledge: ragStatus(), time: new Date().toISOString() });
+  res.json({ ok: true, ai: aiStatus(), transit: transitStatus(), knowledge: ragStatus(), places: placesStatus(), time: new Date().toISOString() });
 });
 
 // Rozgrzanie pamięci miejsc wokół użytkownika (lokale, zabytki) – żeby pytania do NOMI nie czekały na Overpass.
@@ -302,6 +302,7 @@ app.use((err, req, res, _next) => {
 startTimetableService();
 startOfficialService({ canExtract: aiStatus().keyConfigured });
 startRagService();
+startPlacesService();
 
 const server = config.https
   ? https.createServer({ key: fs.readFileSync(config.https.key), cert: fs.readFileSync(config.https.cert) }, app)

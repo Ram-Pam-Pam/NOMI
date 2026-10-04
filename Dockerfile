@@ -1,4 +1,5 @@
-FROM node:18-alpine
+# Node >= 20.12 (process.loadEnvFile, nowsze API) – na Node 18 plik .env byłby pomijany.
+FROM node:22-alpine
 
 WORKDIR /app
 

@@ -413,9 +413,15 @@ export function attractionsVisible() {
 }
 
 /** Pokazuje/ukrywa znaczniki atrakcji; zwraca nowy stan. */
+/** Plan dnia znika z mapy, gdy użytkownik wybiera inne miejsce – żeby nie było tłoku (plan zostaje w Planerze). */
+function hidePlanForFocus() {
+  if (planShown) clearPlan();
+}
+
 export function toggleAttractions(force) {
   attractionsShown = force ?? !attractionsShown;
   if (attractionsShown) {
+    hidePlanForFocus();
     renderAttractions();
     if (state.position) flyTo(state.position.lat, state.position.lon, Math.min(map.getZoom(), 14.5));
     else fitPoints(attractions.map((a) => [a.lat, a.lon]), { maxZoom: 14.5 });
@@ -428,6 +434,7 @@ export function toggleAttractions(force) {
 // ------------------------------------------------ lokale / pinezki
 
 export function showPlaces(places, type = "restaurant", { fit = true } = {}) {
+  hidePlanForFocus();
   clearMarkers("places");
   for (const p of places) {
     const details = [p.cuisine, p.address, p.openingHours ? `${t("osmHours")}: ${p.openingHours}` : null, p.note].filter(Boolean);
@@ -449,6 +456,7 @@ export function showPlaces(places, type = "restaurant", { fit = true } = {}) {
 }
 
 export function showPoint(p) {
+  hidePlanForFocus();
   clearMarkers("search");
   addMarker("search", poiEl(icon("pin"), "place"), p.lat, p.lon, {
     anchor: "bottom",
@@ -522,6 +530,7 @@ let planModes = new Set();
 const refreshLegend = () => showLegend(new Set([...routeModes, ...planModes]));
 
 export function showRoute(option, { fit = true } = {}) {
+  if (option) hidePlanForFocus();
   clearMarkers("route");
   routeModes = new Set();
   if (!option) {
@@ -570,6 +579,13 @@ export function showPlan(plan, { fit = true } = {}) {
   const stops = plan?.stops || [];
   if (!stops.length) return;
   planShown = true;
+  // Plan na mapie = tylko plan: chowamy wcześniej wybraną trasę, lokale i wszystkie atrakcje (poza nawigacją).
+  if (attractionsShown) {
+    attractionsShown = false;
+    clearMarkers("attractions");
+    emit("attractions-toggled", false);
+  }
+  emit("plan-shown");
   const legs = plan.legs || [];
   const sub = []; // odcinki składowe z numerem przejścia planu
   legs.forEach((leg, i) => (leg?.legs || []).forEach((l) => sub.push({ ...l, planLeg: i })));

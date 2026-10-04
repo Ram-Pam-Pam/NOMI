@@ -114,6 +114,13 @@ export function initMapUi() {
   });
 
   on("route-request", (r) => requestRoute(r));
+  // Plan dnia pokazany na mapie: zamykamy panel z poprzednią trasą/lokalami (chyba że trwa nawigacja).
+  on("plan-shown", () => {
+    if (!state.nav && !sheet().classList.contains("hidden")) closeSheet();
+  });
+  on("attractions-toggled", (onState) => {
+    document.querySelector('#map-chips [data-action="attractions"]')?.classList.toggle("on", onState);
+  });
 }
 
 // ------------------------------------------------ wyszukiwarka

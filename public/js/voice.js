@@ -19,6 +19,11 @@ export function listen({ onInterim, onFinal, onEnd, onError }) {
     onError?.("unsupported");
     return () => {};
   }
+  // Jedno rozpoznawanie naraz – drugie wywołanie tylko zwraca „stop” dla bieżącego.
+  if (recognition) {
+    const cur = recognition;
+    return () => cur.stop();
+  }
   stopSpeaking();
   const rec = new Recognition();
   recognition = rec;
@@ -40,17 +45,18 @@ export function listen({ onInterim, onFinal, onEnd, onError }) {
     if (e.error !== "no-speech" && e.error !== "aborted") onError?.(e.error);
   };
   rec.onend = () => {
-    if (recognition === rec) recognition = null;
+    const mine = recognition === rec;
+    if (mine) recognition = null;
     const text = finalText.trim();
     if (text) onFinal?.(text);
     onEnd?.(text);
-    emit("listening", false);
+    if (mine) emit("listening", false);
   };
   try {
     rec.start();
     emit("listening", true);
   } catch (err) {
-    recognition = null;
+    if (recognition === rec) recognition = null;
     onError?.(err.message);
   }
   return () => rec.stop();
@@ -63,10 +69,11 @@ export function stopListening() {
 // ------------------------------------------------ synteza mowy
 
 let voice = null;
-let queue = [];
+let queue = []; // [{ text, priority }]
 let speaking = false;
 let streamBuffer = "";
 let unlocked = false;
+let utterSeq = 0; // numer bieżącej wypowiedzi – spóźnione onend/onerror anulowanych są ignorowane
 
 function pickVoice() {
   if (!ttsSupported) return null;
@@ -96,6 +103,7 @@ export function unlockSpeech() {
 export function cleanForSpeech(text) {
   return String(text)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/\bhttps?:\/\/(?:www\.)?([^/\s]+)\S*/gi, "$1")
     .replace(/\s?[[【]\s*[A-Z]\s*\d+(?:\s*[,;]\s*[A-Z]?\s*\d+)*\s*[\]】]/g, "")
     .replace(/[*_`#>]/g, "")
     .replace(/^\s*[-•]\s+/gm, "")

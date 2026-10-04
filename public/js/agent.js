@@ -6,7 +6,7 @@ import { postJSON, streamSSE } from "./api.js";
 import { buildContext } from "./context.js";
 import { escapeHtml, fmtClock, fmtMinutes, renderMarkdown, stripEmoji } from "./format.js";
 import { t } from "./i18n.js";
-import { icon } from "./icons.js";
+import { LOGO, icon } from "./icons.js";
 import { showPlaces } from "./map.js";
 import { presentRoute, renderPlaceList } from "./mapui.js";
 import { emit, newSession, on, sessionId, setPref, state, store } from "./state.js";
@@ -147,7 +147,7 @@ function nomiShell({ narration = false, title = "" } = {}) {
   const who = narration
     ? `<span class="kind">${icon("book")}${escapeHtml(t("funFact"))}</span><span>${escapeHtml(title)}</span>`
     : `<span>${escapeHtml(t("nomi"))}</span>`;
-  el.innerHTML = `<div class="who"><span class="avatar" aria-hidden="true">N</span>${who}
+  el.innerHTML = `<div class="who"><span class="avatar" aria-hidden="true">${LOGO}</span>${who}
     <button class="speak" type="button" aria-label="${escapeHtml(t("tellMe"))}">${icon("volume")}</button></div>
     <div class="tools"></div><div class="body"></div><div class="cards"></div><div class="verify-slot"></div>`;
   $("chat").appendChild(el);

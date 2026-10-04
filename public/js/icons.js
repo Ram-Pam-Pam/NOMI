@@ -73,6 +73,9 @@ const P = {
   dumpling: '<path d="M3 15c0-5 4-9 9-9s9 4 9 9H3Z"/><path d="M7 9.5 8 12"/><path d="M12 7.5V11"/><path d="m17 9.5-1 2.5"/><path d="M3 15c2 2 16 2 18 0"/>',
 };
 
+/** Logo NOMI: litera N narysowana jak trasa, zakończona kropką celu (kolor kreski = currentColor). */
+export const LOGO = '<svg class="logo" viewBox="0 0 32 32" aria-hidden="true" focusable="false"><path d="M9.5 23.5V11.5l12 11V13" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/><circle class="logo-dot" cx="21.5" cy="9.6" r="3.2"/></svg>';
+
 /** Ikona SVG jako HTML (dekoracyjna – aria-hidden). */
 export function icon(name, cls = "") {
   return `<svg class="i${cls ? ` ${cls}` : ""}" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${P[name] || P.pin}</svg>`;
