@@ -6,9 +6,9 @@ Aplikacja webowa (PWA) dla turystów z agentem AI **NOMI** – tekstowym i głos
 
 | Zakładka | Co robi |
 |---|---|
-| **NOMI** (agent) | Koleżeński przewodnik „na każde zawołanie”. **Każda odpowiedź jest sprawdzana w oficjalnych źródłach** (twierdzenia bez pokrycia są usuwane lub poprawiane), a źródła są wypisane na końcu odpowiedzi. Czat z agentem AI (Sherlock CloudFerro: GPT-OSS + Bielik, albo Claude) – pisany lub mówiony (mikrofon, czytanie odpowiedzi na głos, tryb rozmowy bez rąk). Agent ma **bazę wiedzy z ~440 oficjalnych stron** (krakow.travel, krakow.pl, muzea, ZTP) – fragmenty pasujące do pytania dostaje automatycznie, a w odpowiedzi pokazuje przypisy z linkami do źródeł. Narzędzia: trasy, odjazdy na żywo, restauracje i kawiarnie z OpenStreetMap, „co jest przede mną” (GPS + kompas), cennik biletów, **wydarzenia** (kalendarz krakow.travel), **pogoda i ostrzeżenia IMGW**, przeszukiwanie bazy wiedzy, **zapamiętywanie preferencji** (dieta, poruszanie się, zainteresowania), pinezki na mapie, dodawanie do planu. Nad polem wpisywania – stały pasek podstawowych pytań („Co jest przede mną?”, „Opowiedz o najbliższej atrakcji”, „Gdzie dobrze zjeść?”, bilety, wydarzenia, pogoda…), a pod odpowiedziami – podpowiedzi zależne od tematu. |
+| **NOMI** (agent) | Koleżeński przewodnik „na każde zawołanie”. **Każda odpowiedź jest sprawdzana w oficjalnych źródłach** (twierdzenia bez pokrycia są usuwane lub poprawiane), a źródła są wypisane na końcu odpowiedzi. Czat z agentem AI (Sherlock CloudFerro: GPT-OSS + Bielik, albo Claude) – pisany lub mówiony (mikrofon, czytanie odpowiedzi na głos, tryb rozmowy bez rąk). Agent ma **bazę wiedzy z 433 oficjalnych stron** (krakow.travel, krakow.pl, muzea, ZTP) – fragmenty pasujące do pytania dostaje automatycznie, a w odpowiedzi pokazuje przypisy z linkami do źródeł. Narzędzia: trasy, odjazdy na żywo, restauracje i kawiarnie z OpenStreetMap, „co jest przede mną” (GPS + kompas), cennik biletów, **wydarzenia** (kalendarz krakow.travel), **pogoda i ostrzeżenia IMGW**, przeszukiwanie bazy wiedzy, **zapamiętywanie preferencji** (dieta, poruszanie się, zainteresowania), pinezki na mapie, dodawanie do planu. Nad polem wpisywania – stały pasek podstawowych pytań („Co jest przede mną?”, „Opowiedz o najbliższej atrakcji”, „Gdzie dobrze zjeść?”, bilety, wydarzenia, pogoda…), a pod odpowiedziami – podpowiedzi zależne od tematu. |
 | **Mapa** | MapLibre GL (tylko 2D) z wektorowymi mapami OpenFreeMap. Domyślnie bez znaczników – tylko twoja pozycja z promieniem patrzenia. Wyszukiwarka celu, warianty tras (pieszo / tramwaj / autobus) z opóźnieniami na żywo, rozróżnienie środków transportu na mapie. Szybkie przyciski: atrakcje, jedzenie, informacja turystyczna, toaleta, biletomat, bankomat/kantor, apteka. |
-| **Planer** | Trzy kroki: ile masz czasu → co lubisz → „Ułóż plan”. AI układa plan wg zainteresowań i **oficjalnych godzin otwarcia**, a serwer wyznacza **prawdziwe trasy między punktami** (pieszo po ulicach, dłuższe odcinki tramwajem/autobusem wg rozkładu ZTP) i przelicza godziny. Plan to oś trasy z odcinkami (kliknięcie = odcinek na mapie), rozwijanymi kartami miejsc (oficjalne godziny, ceny, źródło), zmianą kolejności i usuwaniem – po każdej zmianie trasy przeliczają się na nowo. |
+| **Planer** | Trzy kroki: ile masz czasu → co lubisz → „Ułóż plan”. AI układa plan wg zainteresowań i **oficjalnych godzin otwarcia**, a serwer wyznacza **prawdziwe trasy między punktami** (pieszo po ulicach, dłuższe odcinki tramwajem/autobusem wg rozkładu ZTP) i przelicza godziny. Plan to oś trasy z odcinkami (kliknięcie = odcinek na mapie), rozwijanymi kartami miejsc (oficjalne godziny, ceny, źródło), zmianą kolejności i usuwaniem – po każdej zmianie trasy przeliczają się na nowo. Plan pokazany na mapie znika z niej, gdy wybierzesz inne miejsce (trasa, wyszukiwanie, lokale, wszystkie atrakcje) – zostaje w zakładce Planer i wraca przyciskiem „Trasa na mapie”. |
 
 Działa w czasie rzeczywistym:
 - **Nawigacja krok po kroku** z komunikatami głosowymi („Za 40 m skręć w lewo”), strzałką wskazującą kierunek względem tego, gdzie patrzysz, wyznaczaniem nowej trasy po zboczeniu z obecnej oraz fazami „czekaj na tramwaj → jedziesz → wysiadasz na następnym”.
@@ -30,11 +30,20 @@ npm run rag:build           # buduje bazę wiedzy z oficjalnych stron (ok. 5 min
 npm start                   # http://localhost:3000
 ```
 
-Przy pierwszym starcie serwer pobiera rozkłady GTFS ZTP Kraków (~25 MB) do `data/gtfs/` i buduje z nich sieć połączeń (ok. 5 s). Rozkład jest przebudowywany automatycznie po zmianie doby i odświeżany co 12 h.
+Przy pierwszym starcie serwer pobiera rozkłady GTFS ZTP Kraków (~25 MB) do `data/gtfs/` i buduje z nich sieć połączeń (ok. 5 s). Rozkład jest przebudowywany automatycznie po zmianie doby i odświeżany co 12 h. Katalog `data/` nie jest w repozytorium – w tle powstają też: migawka miejsc z OpenStreetMap (`data/osm/`, kilka minut), dane z oficjalnych stron (`data/official/`) i baza wiedzy (`data/rag/`, ok. 5 min, wymaga `LLM_API_KEY`).
 
 Bez klucza API działają mapa, trasy, odjazdy, nawigacja, przypomnienia o biletach, planer uproszczony i opowieści o atrakcjach z bazy faktów; czat AI pokazuje komunikat o brakującym kluczu.
 
-**Tryb demo** (na komputerze bez GPS): `http://localhost:3000/?demo` albo przełącznik w ustawieniach. Kliknięcie w mapę ustawia pozycję, przyciski ⟲ ⟳ obracają kierunek patrzenia, a „▶ Symuluj trasę” przeprowadza wirtualnego turystę po aktywnej trasie (pieszo i tramwajem).
+**Tryb demo** (na komputerze bez GPS): `http://localhost:3000/?demo` albo przełącznik w ustawieniach. Kliknięcie w mapę ustawia pozycję, przyciski obrotu w panelu demo zmieniają kierunek patrzenia, a „Symuluj trasę” przeprowadza wirtualnego turystę po aktywnej trasie (pieszo i tramwajem).
+
+### Docker
+
+```bash
+docker build -t nomi .
+docker run --env-file .env -p 3000:3000 nomi    # http://localhost:3000
+```
+
+Obraz bazuje na Node 22. `.dockerignore` pomija `.env`, `data/` i `node_modules`, więc klucze nie trafiają do obrazu (przekazuje się je przez `--env-file`), a dane powstają przy pierwszym starcie kontenera. Żeby nie pobierać ich przy każdym uruchomieniu, można dodać wolumen: `-v nomi-data:/app/data`.
 
 ### Telefon (GPS, kompas, mikrofon)
 
@@ -43,18 +52,18 @@ Przeglądarki udostępniają lokalizację, kompas i mikrofon tylko przez **HTTPS
 - tunel: `npx localtunnel --port 3000` albo `cloudflared tunnel --url http://localhost:3000`, **lub**
 - certyfikat w sieci lokalnej (np. [mkcert](https://github.com/FiloSottile/mkcert)) i w `.env`: `HTTPS_KEY=certs/key.pem`, `HTTPS_CERT=certs/cert.pem`.
 
-Na iPhonie kompas włącza się po dotknięciu pigułki „Kompas” (wymóg iOS). Rozpoznawanie mowy działa w Chrome i Safari.
+Na iPhonie kompas włącza się po dotknięciu ikony kompasu w górnym pasku albo przycisku w ustawieniach (wymóg iOS). Rozpoznawanie mowy działa w Chrome i Safari.
 
 ## Konfiguracja (`.env`)
 
 ### AI: Sherlock (CloudFerro) – domyślnie
 
-Sherlock udostępnia API zgodne z OpenAI; dane nie są używane do trenowania modeli ani przechowywane, a serwery są w Europie. NOMI używa trzech modeli:
+Sherlock to usługa AI polskiego dostawcy chmury CloudFerro z API zgodnym z OpenAI (zasady przetwarzania danych – w dokumentacji Sherlocka). NOMI używa trzech modeli:
 
 | Zmienna | Domyślnie | Rola |
 |---|---|---|
-| `LLM_PROVIDER` | `sherlock` | `sherlock`, `openai-compatible` (dowolny serwer zgodny z OpenAI, np. vLLM/Ollama) albo `anthropic` |
-| `LLM_API_KEY` | – | Klucz z panelu [sherlock.cloudferro.com](https://sherlock.cloudferro.com) |
+| `LLM_PROVIDER` | `sherlock` (gdy ustawiony `LLM_API_KEY`, inaczej `anthropic`) | `sherlock`, `openai-compatible` (dowolny serwer zgodny z OpenAI, np. vLLM/Ollama) albo `anthropic` |
+| `LLM_API_KEY` (lub `SHERLOCK_API_KEY`) | – | Klucz z panelu [sherlock.cloudferro.com](https://sherlock.cloudferro.com) |
 | `LLM_BASE_URL` | `https://api-sherlock.cloudferro.com/openai/v1` | |
 | `NOMI_CHAT_MODEL` | `openai/gpt-oss-120b` | Rozmowa z narzędziami (trasy, odjazdy, lokale) – mocne function calling |
 | `NOMI_NARRATE_MODEL` | `speakleash/Bielik-11B-v3.0-Instruct` | Opowieści o atrakcjach – najlepsza polszczyzna |
@@ -72,11 +81,15 @@ Sherlock udostępnia API zgodne z OpenAI; dane nie są używane do trenowania mo
 | Zmienna | Domyślnie | Opis |
 |---|---|---|
 | `PORT`, `HOST` | `3000`, `0.0.0.0` | |
+| `HTTPS_KEY`, `HTTPS_CERT` | – | Ścieżki do klucza i certyfikatu – serwer startuje wtedy po HTTPS (GPS i kompas na telefonie) |
 | `OSRM_FOOT_URL`, `OVERPASS_URL`, `NOMINATIM_URL` | publiczne instancje | Własne instancje do produkcji |
+| `OVERPASS_URLS` | publiczny + zapasowe | Kilka serwerów Overpass po przecinku – pierwszy odpowiadający wygrywa |
+| `GTFS_BASE_URL` | `https://gtfs.ztp.krakow.pl` | Źródło rozkładów GTFS i GTFS-Realtime |
+| `NOMI_USER_AGENT` | `NOMI-Krakow-Guide/1.0 (tourist guide app)` | Identyfikacja w zapytaniach do publicznych usług (OSM, strony oficjalne) – warto dodać kontakt |
 | `OFFICIAL_TTL_HOURS` | `72` | Jak często odświeżać dane z oficjalnych stron |
 | `RAG_EMBED_MODEL` | `BAAI/bge-multilingual-gemma2` | Model embeddingów bazy wiedzy (Sherlock); `off` – samo wyszukiwanie słów kluczowych |
 | `RAG_TTL_DAYS` | `7` | Co ile dni przebudowywać bazę wiedzy w tle |
-| `NOMI_DATA_DIR` | `data/` | Katalog na rozkłady GTFS i dane oficjalne |
+| `NOMI_DATA_DIR` | `data/` | Katalog na rozkłady GTFS, dane oficjalne, bazę wiedzy i migawkę miejsc OSM |
 | `NOMI_VERIFY` | włączone | `off` wyłącza sprawdzanie odpowiedzi w źródłach |
 | `NOMI_VERIFY_EFFORT` | `medium` | Staranność sprawdzania (`low` szybciej, ale gorzej wyłapuje przeniesione fakty) |
 
@@ -88,10 +101,10 @@ public/                 Frontend bez kroku budowania (ES modules + MapLibre GL)
   js/sensors.js         GPS (watchPosition) + kompas (DeviceOrientation, kompensacja pochylenia) + tryb demo
   js/agent.js           czat NOMI (SSE), mikrofon, karty akcji, stan sprawdzenia w źródłach, przypisy i lista źródeł
   js/icons.js           ikony liniowe (SVG) i flagi; js/theme.js – tryb dzienny/nocny
-  js/voice.js           Web Speech API: rozpoznawanie mowy, czytanie zdanie po zdaniu w trakcie streamingu
+  js/voice.js           Web Speech API: rozpoznawanie mowy, czytanie gotowych (sprawdzonych) odpowiedzi zdanie po zdaniu
   js/navigation.js      nawigacja w czasie rzeczywistym, zmiana trasy, fazy jazdy, symulacja
   js/tickets.js         przypomnienia o biletach, wykrywanie jazdy pojazdem
-  js/proximity.js       automatyczne opowieści o atrakcjach w pobliżu
+  js/proximity.js       automatyczne opowieści o atrakcjach w pobliżu i ciekawostki po drodze w nawigacji
   js/map.js, mapui.js   mapa MapLibre (2D): warstwy tras i planu, znaczniki, panel wariantów tras
   js/planner.js         planer dnia
 server/
@@ -107,7 +120,7 @@ server/
   transit/gtfs.js       pobieranie i parsowanie GTFS (A – autobusy MPK, M – Mobilis, T – tramwaje)
   transit/router.js     wyszukiwanie połączeń: Connection Scan Algorithm z przesiadkami pieszymi
   transit/realtime.js   GTFS-Realtime: pozycje pojazdów i opóźnienia
-  services/             trasy piesze (OSRM), lokale (Overpass), wyszukiwanie (Nominatim), planer zapasowy,
+  services/             trasy piesze (OSRM), miejsca z OSM (places.js – migawka miasta + zapytanie o okolicę), wyszukiwanie (Nominatim), planer zapasowy,
                         planRouting.js – trasy między punktami planu i przeliczony harmonogram,
                         official.js – dane z oficjalnych stron, events.js – kalendarz krakow.travel, weather.js – IMGW
   data/attractions.js   45 atrakcji ze sprawdzonymi faktami (podstawa opowieści – mniej konfabulacji)
@@ -116,8 +129,8 @@ server/
 
 ### API serwera
 
-`GET /api/health` · `/api/attractions` · `/api/nearby` · `/api/places?type=restaurant&lat&lon` · `/api/search?q` · `/api/route?fromlat&fromlon&tolat&tolon&mode=auto|walk|transit` · `/api/departures?lat&lon|stop` · `/api/vehicles?bbox=s,w,n,e` · `/api/tickets`
-`POST /api/chat` (SSE) · `/api/narrate` (SSE) · `/api/plan` (plan z trasami) · `/api/plan/route` (przeliczenie tras po edycji planu) · `/api/chat/reset` · `GET /api/official/:id` · `GET /api/knowledge?q=` (podgląd wyszukiwania w bazie wiedzy)
+`GET /api/health` (stan rozkładów, AI, bazy wiedzy i migawek miejsc) · `/api/attractions` · `/api/nearby` · `/api/places?type=restaurant&lat&lon` · `/api/search?q` · `/api/route?fromlat&fromlon&tolat&tolon&mode=auto|walk|transit` · `/api/departures?lat&lon|stop` · `/api/vehicles?bbox=s,w,n,e` · `/api/tickets`
+`POST /api/chat` (SSE) · `/api/narrate` (SSE) · `/api/plan` (plan z trasami) · `/api/plan/route` (przeliczenie tras po edycji planu) · `/api/chat/reset` · `/api/warm` (rozgrzanie danych o okolicy) · `GET /api/official/:id` · `GET /api/knowledge?q=` (podgląd wyszukiwania w bazie wiedzy)
 
 ## Oficjalne źródła danych
 
@@ -164,9 +177,12 @@ Testy działają offline na atrapach serwerów AI:
   - opowieści (Bielik),
   - planer JSON,
   - baza wiedzy: fragmenty dołączone do pytania, cytaty → źródła, numeracja etykiet w sesji, `search_knowledge`,
-  - sprawdzanie odpowiedzi: poprawka niepopartych twierdzeń, poprawiona wersja w historii, awaria weryfikatora, opowieść po drodze bez pytania.
+  - sprawdzanie odpowiedzi: poprawka niepopartych twierdzeń, poprawiona wersja w historii, awaria weryfikatora, źródła wskazane przez weryfikator, opowieść po drodze bez pytania,
+  - jedna gotowa odpowiedź bez wtrąceń sprzed wywołania narzędzia,
+  - „Co jest przede mną?” – oficjalne informacje o atrakcji w polu widzenia dołączone do pytania,
+  - miejsca z migawki OSM na dysku (bez zapytań do Overpass).
 - **Claude:** pętla narzędzi przez prawdziwe SDK.
-- **Baza wiedzy:** podział na fragmenty, BM25 z odmianą polską, RRF i ranking hybrydowy, kwantyzacja wektorów, cytowania, zapytania dla krótkich odpowiedzi, podpowiedzi, daty wydarzeń.
+- **Baza wiedzy:** podział na fragmenty, BM25 z odmianą polską, RRF i ranking hybrydowy, kwantyzacja wektorów, cytowania, źródła narzędzi, zapytania dla krótkich odpowiedzi, podpowiedzi, daty wydarzeń, język odpowiedzi i preferencje, sprzątanie odpowiedzi.
 - **Pozostałe:** parser CSV/GTFS, zmiana czasu, geometria, rekomendacje biletów, walidacja narzędzi.
 
 ## Źródła danych i ograniczenia
