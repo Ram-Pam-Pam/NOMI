@@ -1,7 +1,8 @@
 // Zakładka Planer: prosty kreator planu dnia (AI) i plan jako trasa: pieszo / tramwaj / autobus.
 import { getJSON, postJSON } from "./api.js";
-import { CATEGORY_EMOJI, KIND_EMOJI, MODE_EMOJI, distance, escapeHtml, fmtClock, fmtDistance } from "./format.js";
+import { distance, escapeHtml, fmtClock, fmtDistance } from "./format.js";
 import { t } from "./i18n.js";
+import { CATEGORY_ICON, KIND_ICON, icon } from "./icons.js";
 import { attractions, clearPlan, flyTo, focusPlanLeg, planVisible, showPlan } from "./map.js";
 import { showNearbyPlaces } from "./mapui.js";
 import { emit, on, state, store } from "./state.js";
@@ -11,14 +12,14 @@ const $ = (id) => document.getElementById(id);
 
 // Jeden przycisk zainteresowań może obejmować kilka tagów atrakcji.
 const INTERESTS = [
-  { id: "history", emoji: "🏰", tags: ["history", "architecture"] },
-  { id: "museums", emoji: "🖼️", tags: ["museums", "art"] },
-  { id: "churches", emoji: "⛪", tags: ["churches"] },
-  { id: "jewish", emoji: "✡️", tags: ["jewish"] },
-  { id: "views", emoji: "🌅", tags: ["views", "nature"] },
-  { id: "food", emoji: "🥟", tags: ["food"] },
-  { id: "kids", emoji: "🧒", tags: ["kids"] },
-  { id: "ww2", emoji: "🕯️", tags: ["ww2"] },
+  { id: "history", icon: "castle", tags: ["history", "architecture"] },
+  { id: "museums", icon: "landmark", tags: ["museums", "art"] },
+  { id: "churches", icon: "church", tags: ["churches"] },
+  { id: "jewish", icon: "star6", tags: ["jewish"] },
+  { id: "views", icon: "mountain", tags: ["views", "nature"] },
+  { id: "food", icon: "dumpling", tags: ["food"] },
+  { id: "kids", icon: "baby", tags: ["kids"] },
+  { id: "ww2", icon: "candle", tags: ["ww2"] },
 ];
 const START_POINTS = {
   rynek: { lat: 50.0617, lon: 19.9373, name: "Rynek Główny" },
@@ -101,10 +102,10 @@ function renderInterestChips() {
   const selected = new Set([...$("plan-interests").querySelectorAll(".chip.on")].map((c) => c.dataset.value));
   if (!$("plan-interests").children.length) ["history", "museums"].forEach((x) => selected.add(x));
   $("plan-interests").innerHTML = INTERESTS.map(
-    (i) => `<button type="button" class="chip${selected.has(i.id) ? " on" : ""}" data-value="${i.id}">${i.emoji} ${escapeHtml(t(`i_${i.id}`))}</button>`,
+    (i) => `<button type="button" class="chip${selected.has(i.id) ? " on" : ""}" data-value="${i.id}">${icon(i.icon)}${escapeHtml(t(`i_${i.id}`))}</button>`,
   ).join("");
-  $("discover-filter").innerHTML = [{ id: "all", emoji: "✨" }, ...INTERESTS]
-    .map((i) => `<button type="button" class="chip${discoverTag === i.id ? " on" : ""}" data-tag="${i.id}">${i.emoji} ${escapeHtml(i.id === "all" ? t("all") : t(`i_${i.id}`))}</button>`)
+  $("discover-filter").innerHTML = [{ id: "all", icon: "compass" }, ...INTERESTS]
+    .map((i) => `<button type="button" class="chip${discoverTag === i.id ? " on" : ""}" data-tag="${i.id}">${icon(i.icon)}${escapeHtml(i.id === "all" ? t("all") : t(`i_${i.id}`))}</button>`)
     .join("");
 }
 
@@ -150,7 +151,7 @@ async function makePlan() {
     if (err.name !== "AbortError") toast(`${t("error")}: ${err.message}`);
   } finally {
     btn.disabled = false;
-    btn.innerHTML = `<span>${escapeHtml(t("makePlan"))}</span>`;
+    btn.innerHTML = `${icon("route")}<span data-i18n="makePlan">${escapeHtml(t("makePlan"))}</span>`;
   }
 }
 
@@ -259,7 +260,7 @@ export function renderOfficial(o, { open = false } = {}) {
     o.booking || "",
   ].filter(Boolean);
   const src = (o.sources || []).map((u) => `<a href="${escapeHtml(u)}" target="_blank" rel="noopener">${escapeHtml(host(u))}</a>`).join(", ");
-  return `<details class="official"${open ? " open" : ""}><summary>🏛️ ${t("officialInfo")}</summary>
+  return `<details class="official"${open ? " open" : ""}><summary>${icon("info")}${t("officialInfo")}</summary>
     ${hours ? `<div class="official-h">${t("hoursLabel")}</div><ul>${hours}</ul>` : `<p class="muted">${t("noOfficialHours")}</p>`}
     ${prices ? `<div class="official-h">${t("pricesLabel")}</div><ul>${prices}</ul>` : ""}
     ${extra.map((x) => `<p>${escapeHtml(x)}</p>`).join("")}
@@ -273,26 +274,26 @@ const legMinutes = (l) => Math.max(1, Math.round(l.duration / 60));
 
 /** Odcinek między punktami: ikony środków transportu, czas, dystans pieszo, wolny czas. */
 function legHtml(leg, stop, i) {
-  const wait = stop.wait_min ? `<span class="wait">⏳ ${escapeHtml(t("freeTime", { n: stop.wait_min }))}</span>` : "";
+  const wait = stop.wait_min ? `<span class="wait">${icon("hourglass")}${escapeHtml(t("freeTime", { n: stop.wait_min }))}</span>` : "";
   if (!leg) {
     return `<li class="it-leg same"><span class="it-line"></span><div class="it-leg-body muted small">${t("onSpot")} ${wait}</div></li>`;
   }
   const parts = leg.legs
     .map((l) =>
       l.type === "walk"
-        ? `<span class="leg-badge walk">🚶 ${legMinutes(l)}</span>`
-        : `<span class="leg-badge ${l.mode}">${MODE_EMOJI[l.mode]} ${escapeHtml(l.line)}</span>`,
+        ? `<span class="leg-badge walk">${icon("walk")}${legMinutes(l)}</span>`
+        : `<span class="leg-badge ${l.mode}">${icon(l.mode)}${escapeHtml(l.line)}</span>`,
     )
-    .join('<span class="sep">›</span>');
+    .join(`<span class="sep">${icon("chevronRight")}</span>`);
   const walkM = leg.legs.filter((l) => l.type === "walk").reduce((a, l) => a + (l.distance || 0), 0);
   const ride = leg.legs.find((l) => l.type === "transit");
   const total = Math.round(leg.duration / 60);
   const detail = ride ? `${total} min · ${escapeHtml(ride.from.name)} ${fmtClock(ride.departure)}` : `${total} min · ${fmtDistance(walkM)}`;
-  const longWalk = !ride && total > 30 ? `<span class="warn-txt">⚠ ${t("longWalk")}</span>` : "";
+  const longWalk = !ride && total > 30 ? `<span class="warn-txt">${icon("alert")}${t("longWalk")}</span>` : "";
   return `<li class="it-leg" data-plan="leg" data-i="${i}" role="button" tabindex="0" title="${escapeHtml(t("showLegOnMap"))}">
     <span class="it-line ${ride ? ride.mode : "walk"}"></span>
     <div class="it-leg-body"><div class="legs-line">${parts}</div><div class="muted small">${detail} ${wait} ${longWalk}</div></div>
-    <span class="it-leg-map" aria-hidden="true">🗺</span>
+    <span class="it-leg-map" aria-hidden="true">${icon("map")}</span>
   </li>`;
 }
 
@@ -301,27 +302,27 @@ function stopHtml(s, i, last) {
   const meal = s.kind === "meal" || s.kind === "coffee";
   return `<li class="it-stop${s.done ? " done" : ""}${open ? " open" : ""}" data-uid="${s.uid}">
     <div class="it-head" data-plan="toggle" role="button" tabindex="0" aria-expanded="${open}">
-      <span class="num">${s.done ? "✓" : i + 1}</span>
+      <span class="num">${s.done ? icon("check") : i + 1}</span>
       <div class="it-title"><b>${escapeHtml(s.name)}</b>
         <span class="muted small">${escapeHtml([s.start_time, s.end_time].filter(Boolean).join("–"))} · ${s.duration_min} min</span></div>
-      <span class="it-emoji" aria-hidden="true">${KIND_EMOJI[s.kind] || "📍"}</span>
-      <span class="chev" aria-hidden="true">▾</span>
+      <span class="it-ico" aria-hidden="true">${icon(KIND_ICON[s.kind] || "pin")}</span>
+      <span class="chev" aria-hidden="true">${icon("chevronDown")}</span>
     </div>
     <div class="collapsible${open ? "" : " closed"}"><div class="collapsible-inner"><div class="it-body">
       ${s.description ? `<p>${escapeHtml(s.description)}</p>` : ""}
-      ${s.tip ? `<p class="tip">💡 ${escapeHtml(s.tip)}</p>` : ""}
+      ${s.tip ? `<p class="tip">${icon("bulb")}<span>${escapeHtml(s.tip)}</span></p>` : ""}
       ${renderOfficial(s.official)}
       <div class="it-actions">
-        <button class="btn small primary" type="button" data-plan="nav">🧭 ${t("navigate")}</button>
-        <button class="btn small" type="button" data-plan="onmap">🗺 ${t("mapShort")}</button>
-        ${meal ? `<button class="btn small" type="button" data-plan="food">🍽️ ${t("findFood")}</button>` : ""}
-        ${s.attraction_id ? `<button class="btn small" type="button" data-plan="narrate">🔊 ${t("tellMe")}</button>` : ""}
-        <button class="btn small" type="button" data-plan="done">${s.done ? `↺ ${t("notVisited")}` : `✓ ${t("visited")}`}</button>
+        <button class="btn small primary" type="button" data-plan="nav">${icon("navigation")}${t("navigate")}</button>
+        <button class="btn small" type="button" data-plan="onmap">${icon("map")}${t("mapShort")}</button>
+        ${meal ? `<button class="btn small" type="button" data-plan="food">${icon("utensils")}${t("findFood")}</button>` : ""}
+        ${s.attraction_id ? `<button class="btn small" type="button" data-plan="narrate">${icon("volume")}${t("tellMe")}</button>` : ""}
+        <button class="btn small" type="button" data-plan="done">${s.done ? `${icon("undo")}${t("notVisited")}` : `${icon("check")}${t("visited")}`}</button>
       </div>
       <div class="it-edit">
-        <button class="icon-btn small" type="button" data-plan="up" aria-label="${t("moveUp")}" title="${t("moveUp")}"${i === 0 ? " disabled" : ""}>↑</button>
-        <button class="icon-btn small" type="button" data-plan="down" aria-label="${t("moveDown")}" title="${t("moveDown")}"${i === last ? " disabled" : ""}>↓</button>
-        <button class="icon-btn small danger" type="button" data-plan="remove" aria-label="${t("remove")}" title="${t("remove")}">✕</button>
+        <button class="icon-btn small" type="button" data-plan="up" aria-label="${t("moveUp")}" title="${t("moveUp")}"${i === 0 ? " disabled" : ""}>${icon("arrowUp")}</button>
+        <button class="icon-btn small" type="button" data-plan="down" aria-label="${t("moveDown")}" title="${t("moveDown")}"${i === last ? " disabled" : ""}>${icon("arrowDown")}</button>
+        <button class="icon-btn small danger" type="button" data-plan="remove" aria-label="${t("remove")}" title="${t("remove")}">${icon("trash")}</button>
       </div>
     </div></div></div>
   </li>`;
@@ -338,17 +339,18 @@ function renderPlan() {
   }
   form.classList.add("hidden");
   const st = plan.stats || {};
+  // [ikona, tekst] – tekst escapowany przy renderowaniu
   const stats = [
-    st.start_time && st.end_time ? `🕘 ${st.start_time}–${st.end_time}` : "",
-    `📍 ${count(plan.stops.length, "places")}`,
-    st.walk_m ? `🚶 ${fmtDistance(st.walk_m)}` : "",
-    st.rides ? `🚋 ${count(st.rides, "rides")}` : "",
+    st.start_time && st.end_time ? ["clock", `${st.start_time}–${st.end_time}`] : null,
+    ["pin", count(plan.stops.length, "places")],
+    st.walk_m ? ["walk", fmtDistance(st.walk_m)] : null,
+    st.rides ? ["tram", count(st.rides, "rides")] : null,
   ].filter(Boolean);
   const next = plan.stops.find((s) => !s.done);
   const badge =
-    plan.source === "ai" ? `<span class="badge ai">✨ ${t("aiPlan")}</span>` : plan.source === "fallback" ? `<span class="badge">${t("simplePlan")}</span>` : "";
+    plan.source === "ai" ? `<span class="badge ai">${t("aiPlan")}</span>` : plan.source === "fallback" ? `<span class="badge">${t("simplePlan")}</span>` : "";
   const items = [
-    `<li class="it-start"><span class="num start">▶</span><div class="it-title"><b>${t("startLabel")}</b>
+    `<li class="it-start"><span class="num start">${icon("flag")}</span><div class="it-title"><b>${t("startLabel")}</b>
       <span class="muted small">${escapeHtml(plan.start?.name || "")}${st.start_time ? ` · ${st.start_time}` : ""}</span></div></li>`,
   ];
   plan.stops.forEach((s, i) => {
@@ -358,17 +360,17 @@ function renderPlan() {
 
   box.innerHTML = `<div class="card plan-card">
     <div class="plan-head"><div><h3>${escapeHtml(plan.title)}</h3>${plan.summary ? `<p class="muted small">${escapeHtml(plan.summary)}</p>` : ""}</div>${badge}</div>
-    <div class="plan-stats">${stats.map((x) => `<span>${escapeHtml(x)}</span>`).join("")}</div>
+    <div class="plan-stats">${stats.map(([ic, x]) => `<span>${icon(ic)}${escapeHtml(x)}</span>`).join("")}</div>
     <div class="plan-main-actions">
-      <button class="btn primary" type="button" data-plan="map">🗺 ${t("routeOnMap")}</button>
-      <button class="btn" type="button" data-plan="next"${next ? "" : " disabled"}>🧭 ${next ? t("guideNext") : t("allVisited")}</button>
+      <button class="btn primary" type="button" data-plan="map">${icon("map")}${t("routeOnMap")}</button>
+      <button class="btn" type="button" data-plan="next"${next ? "" : " disabled"}>${icon("navigation")}${next ? t("guideNext") : t("allVisited")}</button>
     </div>
     ${plan.rerouting ? `<p class="rerouting"><span class="spinner dark"></span> ${t("reroutingPlan")}</p>` : ""}
     <ol class="itinerary">${items.join("")}</ol>
-    ${plan.tips?.length ? `<details class="plan-tips-box"><summary>💡 ${t("planTips")} (${plan.tips.length})</summary><ul class="plan-tips">${plan.tips.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul></details>` : ""}
+    ${plan.tips?.length ? `<details class="plan-tips-box"><summary>${icon("bulb")}${t("planTips")} (${plan.tips.length})</summary><ul class="plan-tips">${plan.tips.map((x) => `<li>${escapeHtml(x)}</li>`).join("")}</ul></details>` : ""}
     <div class="plan-footer">
-      <button class="btn small" type="button" data-plan="edit">✎ ${t("editPlan")}</button>
-      <button class="btn small" type="button" data-plan="clear">🗑 ${t("deletePlan")}</button>
+      <button class="btn small" type="button" data-plan="edit">${icon("pencil")}${t("editPlan")}</button>
+      <button class="btn small" type="button" data-plan="clear">${icon("trash")}${t("deletePlan")}</button>
     </div>
   </div>`;
 }
@@ -473,15 +475,15 @@ function renderDiscover() {
   $("discover-list").innerHTML = list
     .map(
       ({ a, d }) => `<div class="item d-item" data-id="${a.id}">
-        <div class="emoji">${CATEGORY_EMOJI[a.category] || "📍"}</div>
+        <div class="ico">${icon(CATEGORY_ICON[a.category] || "pin")}</div>
         <div><h4>${escapeHtml(a.name)}</h4>
           <div class="meta">${escapeHtml(a.categoryLabel || "")} · ${escapeHtml(a.district)}${d !== null ? ` · ${fmtDistance(d)}` : ""}</div>
           <p class="clamp2">${escapeHtml(a.summary)}</p>
           <div class="actions">
-            <button class="btn small primary" type="button" data-d="plan">＋ ${t("addToPlan")}</button>
-            <button class="btn small" type="button" data-d="nav" aria-label="${t("navigate")}" title="${t("navigate")}">🧭</button>
-            <button class="btn small" type="button" data-d="narrate" aria-label="${t("tellMe")}" title="${t("tellMe")}">🔊</button>
-            <button class="btn small" type="button" data-d="info">🏛️ ${t("hoursPrices")}</button>
+            <button class="btn small primary" type="button" data-d="plan">${icon("plus")}${t("addToPlan")}</button>
+            <button class="btn small icon-only" type="button" data-d="nav" aria-label="${t("navigate")}" title="${t("navigate")}">${icon("navigation")}</button>
+            <button class="btn small icon-only" type="button" data-d="narrate" aria-label="${t("tellMe")}" title="${t("tellMe")}">${icon("volume")}</button>
+            <button class="btn small" type="button" data-d="info">${icon("clock")}${t("hoursPrices")}</button>
           </div><div class="official-slot"></div></div></div>`,
     )
     .join("");

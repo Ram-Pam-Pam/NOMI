@@ -330,7 +330,7 @@ function parseJsonLoose(raw) {
 }
 
 /** Odpowiedź w formacie JSON zgodnym ze schematem (planer, ekstrakcja danych z oficjalnych stron). */
-export async function runJson({ system = PLANNER_SYSTEM, request: userText, schema, signal }) {
+export async function runJson({ system = PLANNER_SYSTEM, request: userText, schema, signal, effort, name = "plan" }) {
   const model = cfg().planModel;
   const res = await request(
     {
@@ -339,9 +339,9 @@ export async function runJson({ system = PLANNER_SYSTEM, request: userText, sche
         { role: "system", content: `${system}\n\nOdpowiedz wyłącznie obiektem JSON zgodnym z tym schematem:\n${JSON.stringify(schema)}` },
         { role: "user", content: userText },
       ],
-      response_format: { type: "json_schema", json_schema: { name: "plan", schema, strict: true } },
+      response_format: { type: "json_schema", json_schema: { name, schema, strict: true } },
       max_tokens: 8000,
-      ...withReasoning(model, cfg().planReasoningEffort),
+      ...withReasoning(model, effort || cfg().planReasoningEffort),
     },
     signal,
   );

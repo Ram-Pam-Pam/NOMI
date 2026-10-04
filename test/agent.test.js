@@ -52,6 +52,7 @@ before(async () => {
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   process.env.NOMI_SKIP_DOTENV = "1";
+  process.env.NOMI_VERIFY = "off"; // sprawdzanie odpowiedzi testowane osobno (compat.test.js)
   process.env.LLM_PROVIDER = "anthropic";
   process.env.ANTHROPIC_API_KEY = "test-key";
   process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${server.address().port}`;

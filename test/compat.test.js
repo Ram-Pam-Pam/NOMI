@@ -59,6 +59,7 @@ before(async () => {
   fs.writeFileSync(path.join(dataDir, "rag", "meta.json"), JSON.stringify({ model: null, dim: 0, docs: 3, count: 3, builtAt: new Date().toISOString() }));
   Object.assign(process.env, {
     NOMI_SKIP_DOTENV: "1",
+    NOMI_VERIFY: "off", // włączane w testach weryfikacji
     LLM_PROVIDER: "sherlock",
     LLM_API_KEY: "test-key",
     LLM_BASE_URL: `http://127.0.0.1:${server.address().port}/openai/v1`,
@@ -289,3 +290,101 @@ test("baza wiedzy: narzędzie search_knowledge kontynuuje numerację etykiet w s
   const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
   assert.deepEqual(sources?.map((s) => s.title), ["Smocza Jama"]);
 });
+
+// ------------------------------------------------------------------ sprawdzanie odpowiedzi w źródłach
+
+const jsonReply = (obj) => (b, res) =>
+  res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(obj) } }] }));
+
+async function withVerify(fn) {
+  process.env.NOMI_VERIFY = "on";
+  try {
+    await fn();
+  } finally {
+    process.env.NOMI_VERIFY = "off";
+  }
+}
+
+test("weryfikacja: niepoparte twierdzenia poprawione w dowodach, poprawiona wersja w historii i w źródłach", () =>
+  withVerify(async () => {
+    const { chat, ctx } = await load();
+    requests.length = 0;
+    const corrected = "Bilet normalny do Barbakanu kosztuje 22 zł [K1].";
+    replies = [
+      (b, res) => stream(res, [chunk({ content: "Bilet do Barbakanu kosztuje 35 zł [K1], a otwarte jest codziennie do 22:00. 🎟️" }, "stop")]),
+      jsonReply({ verdict: "corrected", unsupported: ["35 zł", "codziennie do 22:00"], answer: corrected, sources: ["K1"] }),
+    ];
+    const c = collector();
+    await chat({ sessionId: "s-verify", text: "Ile kosztuje wstęp do Barbakanu?", ctx, emit: c.emit, signal: new AbortController().signal });
+
+    assert.equal(requests.length, 2);
+    const v = requests[1].body;
+    assert.equal(v.response_format.json_schema.name, "verify");
+    const prompt = v.messages.at(-1).content;
+    assert.match(prompt, /DOWODY:[\s\S]*\[K1\] Barbakan[\s\S]*22 zł/, "fragment oficjalnej strony jako dowód");
+    assert.match(prompt, /ODPOWIEDŹ DO SPRAWDZENIA:\n.*35 zł/);
+    assert.doesNotMatch(prompt, /🎟/, "emoji usunięte przed sprawdzeniem");
+
+    const types = c.events.map((e) => e.type);
+    assert.ok(types.indexOf("verifying") < types.indexOf("verified"));
+    const verified = c.events.find((e) => e.type === "verified").data;
+    assert.equal(verified.status, "corrected");
+    assert.equal(verified.text, corrected);
+    const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
+    assert.deepEqual(sources?.map((s) => s.url), ["https://muzeumkrakowa.pl/oddzialy/barbakan"]);
+
+    // Kolejna tura: w historii jest poprawiona odpowiedź, nie szkic.
+    replies = [(b, res) => stream(res, [chunk({ content: "Spoko!" }, "stop")])];
+    await chat({ sessionId: "s-verify", text: "dzięki", ctx, emit: () => {}, signal: new AbortController().signal });
+    const hist = requests.at(-1).body.messages.filter((m) => m.role === "assistant");
+    assert.equal(hist.at(-1).content, corrected);
+    assert.equal(requests.length, 3, "krótka odpowiedź bez faktów nie jest sprawdzana");
+  }));
+
+test("weryfikacja: awaria weryfikatora → odpowiedź oznaczona jako niesprawdzona (bez blokowania rozmowy)", () =>
+  withVerify(async () => {
+    const { chat, ctx } = await load();
+    requests.length = 0;
+    replies = [(b, res) => stream(res, [chunk({ content: "Kopiec Kościuszki usypano w latach 1820–1823 na wzgórzu Sikornik [K1]." }, "stop")])];
+    const c = collector();
+    await chat({ sessionId: "s-verify-fail", text: "Kiedy usypano Kopiec Kościuszki?", ctx, emit: c.emit, signal: new AbortController().signal });
+    assert.equal(c.events.find((e) => e.type === "verified").data.status, "unverified");
+    assert.match(c.text(), /1820–1823/);
+  }));
+
+test("weryfikacja opowieści: fakty atrakcji jako dowody, źródła – oficjalne strony", () =>
+  withVerify(async () => {
+    const { narrate, ctx } = await load();
+    const { attractionById } = await import("../server/data/attractions.js");
+    const { loadOfficial } = await import("../server/services/official.js");
+    await loadOfficial();
+    requests.length = 0;
+    const story = "Przed tobą Ogród Botaniczny UJ – najstarszy w Polsce, założony w 1783 roku. Zajrzysz?";
+    replies = [(b, res) => stream(res, [chunk({ content: story }, "stop")]), jsonReply({ verdict: "ok", unsupported: [], answer: story })];
+    const c = collector();
+    await narrate({ attraction: attractionById.get("ogrod-botaniczny"), ctx, emit: c.emit, signal: new AbortController().signal, sessionId: "s-story", onRoute: true });
+    assert.match(requests[0].body.messages.at(-1).content, /NIE zadawaj pytania na końcu/, "ciekawostka po drodze – bez pytania");
+    assert.match(requests[1].body.messages.at(-1).content, /Założony w 1783 roku/);
+    assert.equal(c.events.find((e) => e.type === "verified").data.status, "ok");
+    const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources").data.sources;
+    assert.ok(sources.some((s) => s.url.startsWith("https://ogrod.uj.edu.pl")));
+  }));
+
+test("weryfikacja: źródła z dowodów wskazanych przez weryfikator, gdy model nie zacytował etykiet", () =>
+  withVerify(async () => {
+    const { chat, ctx } = await load();
+    requests.length = 0;
+    const answer = "Kopiec usypano w latach 1820–1823 na wzgórzu Sikornik, ku czci Tadeusza Kościuszki.";
+    replies = [
+      (b, res) => stream(res, [chunk({ content: answer }, "stop")]),
+      (b, res) => {
+        // Etykieta fragmentu o Kopcu w bloku wiedzy tej tury.
+        const label = (b.messages.at(-1).content.match(/\[(K\d+)\] Kopiec Kościuszki/) || [])[1];
+        jsonReply({ verdict: "ok", unsupported: [], answer, sources: [label] })(b, res);
+      },
+    ];
+    const c = collector();
+    await chat({ sessionId: "s-support", text: "Kiedy usypano Kopiec Kościuszki na Sikorniku?", ctx, emit: c.emit, signal: new AbortController().signal });
+    const sources = c.events.find((e) => e.type === "action" && e.data.type === "sources")?.data.sources;
+    assert.deepEqual(sources?.map((s) => s.url), ["https://krakow.travel/17793-krakow-kopiec-kosciuszki"]);
+  }));

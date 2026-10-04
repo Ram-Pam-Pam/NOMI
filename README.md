@@ -6,7 +6,7 @@ Aplikacja webowa (PWA) dla turystów z agentem AI **NOMI** – tekstowym i głos
 
 | Zakładka | Co robi |
 |---|---|
-| **NOMI** (agent) | Czat z agentem AI (Sherlock CloudFerro: GPT-OSS + Bielik, albo Claude) – pisany lub mówiony (mikrofon, czytanie odpowiedzi na głos, tryb rozmowy bez rąk). Agent ma **bazę wiedzy z ~440 oficjalnych stron** (krakow.travel, krakow.pl, muzea, ZTP) – fragmenty pasujące do pytania dostaje automatycznie, a w odpowiedzi pokazuje przypisy z linkami do źródeł. Narzędzia: trasy, odjazdy na żywo, restauracje i kawiarnie z OpenStreetMap, „co jest przede mną” (GPS + kompas), cennik biletów, **wydarzenia** (kalendarz krakow.travel), **pogoda i ostrzeżenia IMGW**, przeszukiwanie bazy wiedzy, **zapamiętywanie preferencji** (dieta, poruszanie się, zainteresowania), pinezki na mapie, dodawanie do planu. Po odpowiedzi – podpowiedzi kolejnych pytań. |
+| **NOMI** (agent) | Koleżeński przewodnik „na każde zawołanie”. **Każda odpowiedź jest sprawdzana w oficjalnych źródłach** (twierdzenia bez pokrycia są usuwane lub poprawiane), a źródła są wypisane na końcu odpowiedzi. Czat z agentem AI (Sherlock CloudFerro: GPT-OSS + Bielik, albo Claude) – pisany lub mówiony (mikrofon, czytanie odpowiedzi na głos, tryb rozmowy bez rąk). Agent ma **bazę wiedzy z ~440 oficjalnych stron** (krakow.travel, krakow.pl, muzea, ZTP) – fragmenty pasujące do pytania dostaje automatycznie, a w odpowiedzi pokazuje przypisy z linkami do źródeł. Narzędzia: trasy, odjazdy na żywo, restauracje i kawiarnie z OpenStreetMap, „co jest przede mną” (GPS + kompas), cennik biletów, **wydarzenia** (kalendarz krakow.travel), **pogoda i ostrzeżenia IMGW**, przeszukiwanie bazy wiedzy, **zapamiętywanie preferencji** (dieta, poruszanie się, zainteresowania), pinezki na mapie, dodawanie do planu. Po odpowiedzi – podpowiedzi kolejnych pytań. |
 | **Mapa** | MapLibre GL (tylko 2D) z wektorowymi mapami OpenFreeMap. Domyślnie bez znaczników – tylko twoja pozycja z promieniem patrzenia. Wyszukiwarka celu, warianty tras (pieszo / tramwaj / autobus) z opóźnieniami na żywo, rozróżnienie środków transportu na mapie. Szybkie przyciski: atrakcje, jedzenie, informacja turystyczna, toaleta, biletomat, bankomat/kantor, apteka. |
 | **Planer** | Trzy kroki: ile masz czasu → co lubisz → „Ułóż plan”. AI układa plan wg zainteresowań i **oficjalnych godzin otwarcia**, a serwer wyznacza **prawdziwe trasy między punktami** (pieszo po ulicach, dłuższe odcinki tramwajem/autobusem wg rozkładu ZTP) i przelicza godziny. Plan to oś trasy z odcinkami (kliknięcie = odcinek na mapie), rozwijanymi kartami miejsc (oficjalne godziny, ceny, źródło), zmianą kolejności i usuwaniem – po każdej zmianie trasy przeliczają się na nowo. |
 
@@ -14,6 +14,9 @@ Działa w czasie rzeczywistym:
 - **Nawigacja krok po kroku** z komunikatami głosowymi („Za 40 m skręć w lewo”), strzałką wskazującą kierunek względem tego, gdzie patrzysz, wyznaczaniem nowej trasy po zboczeniu z obecnej oraz fazami „czekaj na tramwaj → jedziesz → wysiadasz na następnym”.
 - **Przypomnienia o bilecie** – przed wejściem do pojazdu (z rekomendacją biletu czasowego i ceną) oraz gdy aplikacja wykryje, że jedziesz tramwajem lub autobusem (pozycja użytkownika porównywana z pozycjami pojazdów z GTFS-Realtime).
 - **Opowieści o atrakcjach** – po zbliżeniu się do zabytku NOMI sam o nim opowiada (najpierw te w polu widzenia).
+- **Ciekawostki po drodze w nawigacji** – gdy trasa prowadzi obok atrakcji, a do najbliższego skrętu jest daleko (≥ 110 m), NOMI opowiada krótką ciekawostkę. Na ten czas komunikaty „gdzie skręcić” są wstrzymane (zamiast nich krótka wibracja, na banerze: „NOMI opowiada ciekawostkę”), a po opowieści NOMI wraca do trasy, czytając bieżącą instrukcję. Komunikaty krytyczne (wysiadka, cel) nie są wstrzymywane. Wyłącznik: „Ciekawostki po drodze w nawigacji” w ustawieniach.
+
+Wygląd: styl nowoczesny i minimalistyczny (font Inter, ikony liniowe zamiast emoji), **tryb dzienny i nocny** (przycisk słońce/księżyc w górnym pasku albo Ustawienia → Wygląd: Auto / Dzienny / Nocny – razem z mapą), **język zmieniany flagą** w górnym pasku (PL / EN).
 
 ## Szybki start
 
@@ -74,6 +77,8 @@ Sherlock udostępnia API zgodne z OpenAI; dane nie są używane do trenowania mo
 | `RAG_EMBED_MODEL` | `BAAI/bge-multilingual-gemma2` | Model embeddingów bazy wiedzy (Sherlock); `off` – samo wyszukiwanie słów kluczowych |
 | `RAG_TTL_DAYS` | `7` | Co ile dni przebudowywać bazę wiedzy w tle |
 | `NOMI_DATA_DIR` | `data/` | Katalog na rozkłady GTFS i dane oficjalne |
+| `NOMI_VERIFY` | włączone | `off` wyłącza sprawdzanie odpowiedzi w źródłach |
+| `NOMI_VERIFY_EFFORT` | `medium` | Staranność sprawdzania (`low` szybciej, ale gorzej wyłapuje przeniesione fakty) |
 
 ## Architektura
 
@@ -81,7 +86,8 @@ Sherlock udostępnia API zgodne z OpenAI; dane nie są używane do trenowania mo
 public/                 Frontend bez kroku budowania (ES modules + MapLibre GL)
   js/app.js             start, zakładki, ustawienia
   js/sensors.js         GPS (watchPosition) + kompas (DeviceOrientation, kompensacja pochylenia) + tryb demo
-  js/agent.js           czat NOMI (SSE), mikrofon, karty akcji agenta
+  js/agent.js           czat NOMI (SSE), mikrofon, karty akcji, stan sprawdzenia w źródłach, przypisy i lista źródeł
+  js/icons.js           ikony liniowe (SVG) i flagi; js/theme.js – tryb dzienny/nocny
   js/voice.js           Web Speech API: rozpoznawanie mowy, czytanie zdanie po zdaniu w trakcie streamingu
   js/navigation.js      nawigacja w czasie rzeczywistym, zmiana trasy, fazy jazdy, symulacja
   js/tickets.js         przypomnienia o biletach, wykrywanie jazdy pojazdem
@@ -95,7 +101,8 @@ server/
   agent/anthropic.js    backend Claude (Anthropic SDK)
   agent/tools.js        narzędzia agenta (JSON Schema + walidacja wejścia)
   agent/context.js      kontekst czasu rzeczywistego dołączany do każdego pytania (pozycja, kierunek, nawigacja, preferencje)
-  agent/knowledge.js    wiedza dla agenta: automatyczny dobór fragmentów, etykiety cytowań [K1], podpowiedzi pytań
+  agent/knowledge.js    wiedza dla agenta: automatyczny dobór fragmentów, etykiety cytowań [K1], źródła narzędzi, podpowiedzi pytań
+  agent/verify.js       sprawdzanie odpowiedzi w dowodach tury + sprzątanie „zbugowanych” odpowiedzi
   rag/                  baza wiedzy: sources.js (oficjalne strony), text.js (fragmenty, BM25, RRF), embed.js, index.js (budowa, wyszukiwanie)
   transit/gtfs.js       pobieranie i parsowanie GTFS (A – autobusy MPK, M – Mobilis, T – tramwaje)
   transit/router.js     wyszukiwanie połączeń: Connection Scan Algorithm z przesiadkami pieszymi
@@ -131,6 +138,15 @@ Oprócz danych strukturalnych o 45 atrakcjach NOMI ma bazę wiedzy z pełnych tr
 - **W rozmowie**: do każdego pytania serwer dobiera do 4 fragmentów powyżej progu trafności (krótkie odpowiedzi typu „chcę” łączy z ostatnią wypowiedzią NOMI). Fragmenty mają etykiety `[K1]`, `[K2]`… – NOMI cytuje je w odpowiedzi, a aplikacja zamienia je na przypisy z listą źródeł (syntezator ich nie czyta). Gdy to za mało, agent sam wywołuje `search_knowledge`.
 - **Ocena**: `npm run rag:eval` – 30 pytań turystów (PL/EN) z oczekiwanymi stronami: hit@1/3/5 i MRR dla BM25, wektorów i hybrydy oraz podobieństwo dla pytań spoza tematu (kalibracja progu). Wynik na obecnym indeksie (433 strony, 1457 fragmentów): hybryda hit@1 90%, hit@3 100%, MRR 0,94 (samo BM25: 67%, 87%, 0,78). `-- --model <nazwa>` porównuje inny model embeddingów (`e5-mistral-7b-instruct`: hit@3 47%; `stella-pl-retrieval-8k` na Sherlocku nie rozróżnia tekstów).
 
+### Sprawdzanie każdej odpowiedzi
+
+Po wygenerowaniu odpowiedzi (czat i opowieści) serwer przekazuje ją weryfikatorowi (ten sam dostawca AI, `NOMI_VERIFY_EFFORT`) razem z **dowodami tej tury**: fragmentami oficjalnych stron, wynikami narzędzi (rozkłady ZTP, taryfa, dane instytucji, OSM, IMGW, kalendarz wydarzeń), kontekstem z telefonu i danymi z poprzednich tur. Każde twierdzenie faktograficzne (liczby, ceny, godziny, daty, nazwy, adresy, historia, legendy, opisy lokali) musi wynikać z dowodów – inaczej jest usuwane albo poprawiane; gdy po poprawce brakuje odpowiedzi, NOMI mówi wprost, że nie ma oficjalnej informacji. Weryfikator wyłapuje też fakty „przeniesione” (data z innego zdarzenia).
+
+- W aplikacji szkic odpowiedzi jest widoczny od razu (przygaszony, „Sprawdzam w oficjalnych źródłach…”), a po sprawdzeniu pojawia się wersja ostateczna z oznaczeniem „Sprawdzone w oficjalnych źródłach” albo „Poprawione po sprawdzeniu”. **Głos czyta dopiero sprawdzoną wersję.** W historii rozmowy zapisywana jest wersja sprawdzona.
+- Na końcu odpowiedzi – lista źródeł: cytowane fragmenty bazy wiedzy (przypisy w tekście) i źródła danych narzędzi, o których odpowiedź mówi (strony instytucji, ZTP, IMGW, OpenStreetMap).
+- Sprzątanie odpowiedzi: ukryte bloki modelu, znaczniki, wymyślone etykiety cytowań, emoji, puste linie; pusta odpowiedź → prośba o ponowienie pytania.
+- Gdy weryfikator jest niedostępny, odpowiedź jest pokazana z ostrzeżeniem „Nie udało się sprawdzić w źródłach”.
+
 NOMI podaje godziny i ceny tylko z tych danych i mówi, skąd pochodzą; jeśli ich brak – odsyła do oficjalnej strony. Lokale gastronomiczne nie mają oficjalnego rejestru – są wyszukiwane w OpenStreetMap, a NOMI zaznacza, że godziny warto potwierdzić na stronie lokalu.
 
 ## Testy
@@ -147,7 +163,8 @@ Testy działają offline na atrapach serwerów AI:
   - ponowienie zapytania bez odrzuconego parametru,
   - opowieści (Bielik),
   - planer JSON,
-  - baza wiedzy: fragmenty dołączone do pytania, cytaty → źródła, numeracja etykiet w sesji, `search_knowledge`.
+  - baza wiedzy: fragmenty dołączone do pytania, cytaty → źródła, numeracja etykiet w sesji, `search_knowledge`,
+  - sprawdzanie odpowiedzi: poprawka niepopartych twierdzeń, poprawiona wersja w historii, awaria weryfikatora, opowieść po drodze bez pytania.
 - **Claude:** pętla narzędzi przez prawdziwe SDK.
 - **Baza wiedzy:** podział na fragmenty, BM25 z odmianą polską, RRF i ranking hybrydowy, kwantyzacja wektorów, cytowania, zapytania dla krótkich odpowiedzi, podpowiedzi, daty wydarzeń.
 - **Pozostałe:** parser CSV/GTFS, zmiana czasu, geometria, rekomendacje biletów, walidacja narzędzi.

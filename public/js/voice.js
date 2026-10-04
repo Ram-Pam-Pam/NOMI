@@ -1,5 +1,5 @@
 // Głos: rozpoznawanie mowy (Web Speech API) i czytanie odpowiedzi na głos.
-import { emit, state } from "./state.js";
+import { emit, on, state } from "./state.js";
 import { speechLang } from "./i18n.js";
 
 const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -96,7 +96,7 @@ export function unlockSpeech() {
 export function cleanForSpeech(text) {
   return String(text)
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/\s?\[K\d+(?:\s*[,;]\s*K?\d+)*\]/g, "")
+    .replace(/\s?[[【]\s*[A-Z]\s*\d+(?:\s*[,;]\s*[A-Z]?\s*\d+)*\s*[\]】]/g, "")
     .replace(/[*_`#>]/g, "")
     .replace(/^\s*[-•]\s+/gm, "")
     .replace(/→|->/g, ", ")
@@ -167,4 +167,23 @@ export function stopSpeaking() {
 
 export function isSpeaking() {
   return speaking || queue.length > 0;
+}
+
+/** Obietnica spełniona, gdy syntezator skończy mówić (albo po timeout ms). */
+export function whenSilent(timeout = 90_000) {
+  return new Promise((resolve) => {
+    if (!isSpeaking()) return resolve();
+    let off = null;
+    const timer = setTimeout(() => {
+      off?.();
+      resolve();
+    }, timeout);
+    off = on("speaking", (v) => {
+      if (!v && !isSpeaking()) {
+        off();
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  });
 }

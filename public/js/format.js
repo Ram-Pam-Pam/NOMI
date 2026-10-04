@@ -157,13 +157,6 @@ export function stepInstruction(step) {
   }
 }
 
-export const MODE_EMOJI = { tram: "🚋", bus: "🚌", walk: "🚶" };
-export const CATEGORY_EMOJI = {
-  square: "⛲", church: "⛪", castle: "🏰", museum: "🏛️", monument: "🗿", street: "🛣️", jewish: "✡️", park: "🌳",
-  viewpoint: "⛰️", bridge: "🌉", market: "🧺", memorial: "🕯️", theatre: "🎭", university: "🎓",
-};
-export const PLACE_EMOJI = {
-  restaurant: "🍽️", cafe: "☕", bar: "🍺", fast_food: "🍔", ice_cream: "🍦", bakery: "🥐", pharmacy: "💊",
-  atm: "🏧", toilets: "🚻", ticket_machine: "🎟️", attraction: "📍", historic: "🏛️", church: "⛪",
-};
-export const KIND_EMOJI = { sight: "📍", museum: "🏛️", church: "⛪", viewpoint: "⛰️", walk: "🚶", meal: "🍽️", coffee: "☕", break: "🪑" };
+// Emoji z tekstu modelu (interfejs używa ikon SVG, nie emoji).
+const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{1F1E6}-\u{1F1FF}\u{FE0F}\u{200D}]/gu;
+export const stripEmoji = (s) => String(s ?? "").replace(EMOJI_RE, "").replace(/[ \t]{2,}/g, " ");

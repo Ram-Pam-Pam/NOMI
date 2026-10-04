@@ -2,7 +2,8 @@
 import { config } from "../config.js";
 import { ATTRACTIONS } from "../data/attractions.js";
 import { withGeometry } from "../services/attractions.js";
-import { getOfficial, officialText, setExtractor, withOfficial } from "../services/official.js";
+import { sourceLabel } from "../rag/sources.js";
+import { getOfficial, officialPublic, officialText, setExtractor, withOfficial } from "../services/official.js";
 import { routePlan } from "../services/planRouting.js";
 import { simplePlan } from "../services/simplePlanner.js";
 import * as anthropic from "./anthropic.js";
@@ -10,6 +11,7 @@ import { buildContextBlock, detectLang, hasPosition, preferenceHint } from "./co
 import { AgentError } from "./errors.js";
 import { Citations, autoKnowledge, retrievalQuery, suggestionsFor } from "./knowledge.js";
 import * as compat from "./openaiCompat.js";
+import { cleanAnswer, needsVerification, verifyAnswer } from "./verify.js";
 
 export { AgentError };
 
@@ -54,9 +56,51 @@ export function resetSession(id) {
   sessions.delete(id);
 }
 
+// ------------------------------------------------------------------ sprawdzanie odpowiedzi w źródłach
+
+const EVIDENCE_KEEP = 8; // ile dowodów z poprzednich tur pamiętać (pytania uzupełniające, np. „a ulgowy?”)
+
+/**
+ * Sprząta odpowiedź i sprawdza ją w dowodach (zdarzenie "verifying" dla aplikacji).
+ * Zwraca { status: ok | corrected | unverified | skipped, answer, unsupported }.
+ */
+async function checkAnswer({ question, answer, evidence, emit, signal, maxLabel }) {
+  const cleaned = cleanAnswer(answer, { maxLabel });
+  if (!config.verify || !needsVerification(cleaned)) return { status: "skipped", answer: cleaned };
+  emit("verifying", {});
+  try {
+    return await verifyAnswer({ question, answer: cleaned, evidence, signal, maxLabel, effort: config.verifyEffort, runJson: (args) => backend().runJson(args) });
+  } catch (err) {
+    if (signal?.aborted) throw err;
+    console.warn("[verify] sprawdzenie nieudane:", describeError(err));
+    return { status: "unverified", answer: cleaned };
+  }
+}
+
+/** W historii tury zostaje sprawdzona wersja odpowiedzi (format OpenAI albo Claude). */
+function replaceFinalText(added, text) {
+  let last = -1;
+  added.forEach((m, i) => m.role === "assistant" && (last = i));
+  added.forEach((m, i) => {
+    if (m.role !== "assistant") return;
+    if (typeof m.content === "string") m.content = i === last ? text : "";
+    else if (Array.isArray(m.content)) {
+      const rest = m.content.filter((b) => b.type !== "text");
+      if (i === last) m.content = [...rest, { type: "text", text }];
+      else if (rest.length) m.content = rest;
+    }
+  });
+}
+
+const EMPTY_ANSWER = {
+  pl: "Hmm, tym razem nic sensownego mi nie wyszło. Zapytaj proszę jeszcze raz, może trochę inaczej.",
+  en: "Hmm, I couldn't come up with a proper answer this time. Could you ask again, maybe a bit differently?",
+};
+
 /**
  * Rozmowa z NOMI. Historia sesji jest tylko dopisywana – nowa tura trafia do sesji
  * dopiero po pomyślnym zakończeniu (przerwana tura nie zostawia osieroconych wywołań narzędzi).
+ * Odpowiedź przed zapisaniem jest sprawdzana w dowodach tej tury (fragmenty oficjalnych stron, wyniki narzędzi).
  */
 export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
   const session = getSession(sessionId);
@@ -69,6 +113,7 @@ export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
   session.busy = true;
   const citations = new Citations(session);
   const tools = [];
+  const evidence = []; // wyniki narzędzi tej tury – dowody do sprawdzenia odpowiedzi
   let answer = "";
   const tracked = (event, data) => {
     if (event === "text") answer += data.delta;
@@ -86,12 +131,36 @@ export async function chat({ sessionId, text, ctx: baseCtx, emit, signal }) {
       knowledge,
       emit: tracked,
       signal,
-      toolCtx: { ctx, emit: tracked, citations },
+      toolCtx: {
+        ctx,
+        emit: tracked,
+        citations,
+        onResult: (name, input, content) => evidence.push(`Wynik narzędzia ${name} ${JSON.stringify(input)}:\n${content}`),
+      },
     });
-    if (added) session.messages.push(...added);
-    const sources = citations.cited(answer);
+    if (!added) return; // tura odrzucona – nic nie zapisujemy
+
+    const draft = answer.trim();
+    const v = await checkAnswer({
+      question: text,
+      answer: draft,
+      evidence: [buildContextBlock(ctx), knowledge, ...evidence, ...(session.evidence || [])],
+      emit,
+      signal,
+      maxLabel: citations.maxLabel,
+    });
+    const final = v.answer || EMPTY_ANSWER[ctx.replyLang === "en" ? "en" : "pl"];
+    emit("verified", { status: v.status, ...(final !== draft ? { text: final } : {}), ...(v.unsupported?.length ? { unsupported: v.unsupported } : {}) });
+    if (final !== draft) replaceFinalText(added, final);
+    session.messages.push(...added);
+    session.evidence = [...(session.evidence || []), knowledge, ...evidence]
+      .filter(Boolean)
+      .map((e) => e.slice(0, 4000))
+      .slice(-EVIDENCE_KEEP);
+
+    const sources = citations.cited(final, { extraLabels: v.support || [] });
     if (sources.length) emit("action", { type: "sources", sources });
-    emit("suggestions", { items: suggestionsFor({ tools, answer, lang: ctx.replyLang }) });
+    emit("suggestions", { items: suggestionsFor({ tools, answer: final, lang: ctx.replyLang }) });
   } finally {
     session.busy = false;
     if (session.pending.length) session.messages.push(...session.pending.splice(0));
@@ -153,7 +222,13 @@ function openerFor(direction, lang) {
   return OPENERS_PL[direction] || null;
 }
 
-export async function narrate({ attraction: a, ctx, emit, signal, sessionId }) {
+/** Usuwa końcowe pytanie z wypowiedzi złożonej z kilku zdań. */
+export function dropTrailingQuestion(text) {
+  const parts = String(text).trim().split(/(?<=[.!?…])\s+/);
+  return parts.length > 1 && parts.at(-1).trim().endsWith("?") ? parts.slice(0, -1).join(" ") : String(text).trim();
+}
+
+export async function narrate({ attraction: a, ctx, emit, signal, sessionId, onRoute = false }) {
   const lang = ctx.lang;
   const geo = hasPosition(ctx) ? withGeometry(a, ctx.lat, ctx.lon, ctx.heading, lang) : null;
   const opener = openerFor(geo?.direction, lang);
@@ -166,27 +241,70 @@ export async function narrate({ attraction: a, ctx, emit, signal, sessionId }) {
       ? `Zacznij wypowiedź dokładnie od słów: „${opener}” – to kierunek wyliczony z kompasu, nie zmieniaj go.`
       : "Kierunek względem użytkownika jest nieznany – nie wskazuj strony.",
     `Fakty (źródło: ${source}) – opowiadaj tylko na ich podstawie:\n- ${facts.join("\n- ")}`,
+    onRoute
+      ? "Użytkownik idzie właśnie do celu z włączoną nawigacją, a ta atrakcja jest po drodze. Opowiedz krótką ciekawostkę: 2–3 zdania, najwyżej 50 słów. NIE zadawaj pytania na końcu i nie mów, dokąd iść – nawigacja wróci zaraz po tobie."
+      : "",
     `Język wypowiedzi: ${lang === "en" ? "angielski" : "polski"}.`,
   ]
     .filter(Boolean)
     .join("\n\n");
 
   let told = "";
+  let fromAI = true;
   const tracked = (event, data) => {
     if (event === "text" && data.delta) told += data.delta;
     emit(event, data);
   };
   try {
     const { refused } = await backend().runNarration({ prompt, emit: tracked, signal });
-    if (refused && !told) tracked("text", { delta: staticNarration(a, geo, lang) });
+    if (refused && !told) {
+      fromAI = false;
+      tracked("text", { delta: staticNarration(a, geo, lang) });
+    }
   } catch (err) {
     if (signal?.aborted) throw err;
     // Bez AI nadal opowiadamy – z oficjalnych faktów.
     console.warn("[narrate] AI niedostępne, narracja statyczna:", describeError(err));
-    if (!told) tracked("text", { delta: staticNarration(a, geo, lang) });
+    if (!told) {
+      fromAI = false;
+      tracked("text", { delta: staticNarration(a, geo, lang) });
+    }
     emit("notice", { message: describeError(err, lang) });
   }
-  if (sessionId && told.trim()) appendToSession(getSession(sessionId), narrationTurn(a, told.trim()));
+
+  // Opowieść z modelu sprawdzamy w faktach, na których miała się opierać (opowieść awaryjna to same fakty).
+  const draft = told.trim();
+  let final = draft;
+  if (draft && fromAI) {
+    const official = officialText(a.id, { facts: false });
+    const v = await checkAnswer({
+      question: `Krótka opowieść o atrakcji: ${a.name.pl}`,
+      answer: draft,
+      evidence: [
+        `Atrakcja: ${a.name.pl} (${a.name.en}).`,
+        geo ? `Kontekst z telefonu: odległość ${geo.distance} m${opener ? `; kierunek z kompasu – wypowiedź zaczyna się od słów „${opener}”` : ""}.` : "",
+        `Oficjalne fakty (źródło: ${source}):\n- ${facts.join("\n- ")}`,
+        official ? `Oficjalne godziny i ceny: ${official}` : "",
+      ],
+      emit,
+      signal,
+    });
+    final = v.answer || draft;
+    // Ciekawostka po drodze kończy się bez pytania – nawigacja zaraz wraca (model nie zawsze tego pilnuje).
+    if (onRoute) final = dropTrailingQuestion(final);
+    emit("verified", { status: v.status, ...(final !== draft ? { text: final } : {}) });
+  } else {
+    emit("verified", { status: "skipped" });
+  }
+  // Źródła opowieści: oficjalne strony atrakcji.
+  const o = officialPublic(a.id);
+  if (o?.sources?.length) {
+    emit("action", {
+      type: "sources",
+      sources: o.sources.map((url) => ({ title: a.name[lang] || a.name.pl, url, source: sourceLabel(url), fetched: o.fetched })),
+    });
+  }
+  if (sessionId && final) appendToSession(getSession(sessionId), narrationTurn(a, final));
 }
 
 // ------------------------------------------------------------------ planer zwiedzania

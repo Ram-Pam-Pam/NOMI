@@ -1,7 +1,8 @@
 // Nawigacja krok po kroku: pieszo + tramwaje/autobusy, z komunikatami głosowymi.
 import { getJSON } from "./api.js";
-import { MODE_EMOJI, angleDiff, bearing, distance, fmtClock, fmtDistance, fmtMinutes, pointAlong, projectOnLine, stepInstruction } from "./format.js";
+import { angleDiff, bearing, distance, fmtClock, fmtDistance, fmtMinutes, pointAlong, projectOnLine, stepInstruction } from "./format.js";
 import { t } from "./i18n.js";
+import { icon } from "./icons.js";
 import { clearRoute, highlightLeg, setFollow, showRoute } from "./map.js";
 import { setDemoPosition } from "./sensors.js";
 import { emit, on, state } from "./state.js";
@@ -11,14 +12,26 @@ import { speak, stopSpeaking } from "./voice.js";
 
 let nav = null;
 let simTimer = null;
+// Ciekawostka po drodze: w trakcie opowieści komunikaty „gdzie skręcić” są wstrzymane (zamiast nich krótka wibracja),
+// a po jej zakończeniu NOMI wraca do trasy, czytając bieżącą instrukcję.
+let story = null; // { name, suppressed }
+const STORY_MIN_GAP_M = 110; // opowieść tylko, gdy do najbliższego manewru jest co najmniej tyle metrów (~80 s marszu)
 
 const $ = (id) => document.getElementById(id);
 const leg = () => nav?.option.legs[nav.legIndex];
 const lower = (s) => (s ? s[0].toLowerCase() + s.slice(1) : s);
 const pt = (arr) => ({ lat: arr[0], lon: arr[1] });
 
-/** Komunikaty głosowe nawigacji – niezależne od czytania odpowiedzi czatu, z osobnym wyłącznikiem. */
-const say = (text, opts = {}) => {
+/**
+ * Komunikaty głosowe nawigacji – niezależne od czytania odpowiedzi czatu, z osobnym wyłącznikiem.
+ * W trakcie ciekawostki zwykłe komunikaty są wstrzymywane; critical (wysiadka, cel) – zawsze.
+ */
+const say = (text, { critical = false, ...opts } = {}) => {
+  if (story && !critical) {
+    story.suppressed = true;
+    navigator.vibrate?.(60);
+    return;
+  }
   if (state.settings.navVoice) speak(text, { ...opts, force: true });
 };
 
@@ -27,9 +40,50 @@ function syncVoiceButton() {
   btn.classList.toggle("muted", !state.settings.navVoice);
   btn.setAttribute("aria-label", state.settings.navVoice ? t("navVoiceOff") : t("navVoiceOn"));
   btn.title = btn.getAttribute("aria-label");
-  btn.innerHTML = state.settings.navVoice
-    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4Zm-2.5-8.8v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6Z"/></svg>'
-    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 5V5L7 10H3Zm13.6 2 2.7-2.7-1.4-1.4-2.7 2.7-2.7-2.7-1.4 1.4 2.7 2.7-2.7 2.7 1.4 1.4 2.7-2.7 2.7 2.7 1.4-1.4-2.7-2.7Z"/></svg>';
+  btn.innerHTML = icon(state.settings.navVoice ? "volume" : "volumeX");
+}
+
+function syncSimButton() {
+  const btn = $("demo-sim");
+  if (btn) btn.innerHTML = simTimer ? `${icon("stop")}${t("stopSim")}` : `${icon("play")}${t("simulate")}`;
+}
+
+// ------------------------------------------------ ciekawostki po drodze
+
+/** Czy teraz jest dobry moment na ciekawostkę: idziemy pieszo, a najbliższy skręt jest daleko. */
+export function storyWindow() {
+  if (!nav || story) return null;
+  const l = leg();
+  if (!l || l.type !== "walk" || nav.phase !== "walk") return null;
+  const along = nav.walkProgress?.along ?? 0;
+  const remaining = nav.walkProgress?.remaining ?? l.distance ?? 0;
+  const k = nextStepIndex(l, along);
+  const toTurn = k > 0 && l.steps[k].type !== "arrive" ? l.stepAlong[k] - along : remaining;
+  const last = nav.legIndex === nav.option.legs.length - 1;
+  return { allowed: toTurn >= STORY_MIN_GAP_M && (!last || remaining > 90), toTurn, geometry: l.geometry, along };
+}
+
+/** Początek opowieści w trakcie nawigacji – wstrzymuje komunikaty o skrętach. */
+export function storyStart(name) {
+  if (!nav) return false;
+  story = { name, suppressed: false };
+  document.body.classList.add("story-active");
+  $("nav-story-text").textContent = t("storyOnRoute");
+  $("nav-story").classList.remove("hidden");
+  return true;
+}
+
+/** Koniec opowieści: komunikaty wracają; jeśli coś pominęliśmy – czytamy bieżącą instrukcję. */
+export function storyEnd({ silent = false } = {}) {
+  if (!story) return;
+  const missed = story.suppressed;
+  story = null;
+  document.body.classList.remove("story-active");
+  $("nav-story").classList.add("hidden");
+  if (nav) {
+    updateBanner();
+    if (missed && !silent) say(`${t("storyNextTurn")} ${lower(currentInstruction())}`);
+  }
 }
 
 export function initNavigation() {
@@ -44,8 +98,12 @@ export function initNavigation() {
     if (on && nav) say(currentInstruction(), { interrupt: true });
     if (!on) stopSpeaking();
   });
-  on("settings", syncVoiceButton);
+  on("settings", () => {
+    syncVoiceButton();
+    syncSimButton();
+  });
   syncVoiceButton();
+  syncSimButton();
   $("demo-sim").addEventListener("click", () => (simTimer ? stopSimulation() : startSimulation()));
 }
 
@@ -80,7 +138,8 @@ export function startNavigation(route, index = 0) {
 export function stopNavigation({ arrived = false } = {}) {
   if (!nav) return;
   stopSimulation();
-  if (!arrived) say(t("navEnded"));
+  storyEnd({ silent: true });
+  if (!arrived) say(t("navEnded"), { critical: true });
   nav = null;
   state.nav = null;
   document.body.classList.remove("navigating");
@@ -229,7 +288,7 @@ function handleTransit(pos, l) {
   nav.stopsToGo = stopsToGo;
   if (stopsToGo === 1 && !nav.announced.has("getoff")) {
     nav.announced.add("getoff");
-    say(`${t("nextStopGetOff")}: ${l.to.name}.`, { interrupt: true });
+    say(`${t("nextStopGetOff")}: ${l.to.name}.`, { interrupt: true, critical: true });
     navigator.vibrate?.([200, 100, 200]);
   }
   if (distance(pos, l.to) < 70 && (speed < 2.5 || stopsToGo === 0)) {
@@ -264,8 +323,8 @@ function maybeTicketReminder(legIdx) {
 
 function arrive() {
   const name = nav.to?.name || "";
-  say(`${t("navArrived")}${name ? `: ${name}` : ""}.`, { interrupt: true });
-  toast(`🏁 ${t("navArrived")}${name ? `: ${name}` : ""}`);
+  say(`${t("navArrived")}${name ? `: ${name}` : ""}.`, { interrupt: true, critical: true });
+  toast(`${t("navArrived")}${name ? `: ${name}` : ""}`, { icon: "flag" });
   const dest = nav.to;
   stopNavigation({ arrived: true });
   emit("arrived", dest);
@@ -310,7 +369,7 @@ function walkTarget() {
 }
 
 function transitText(l) {
-  const v = `${MODE_EMOJI[l.mode]} ${t(l.mode)} ${l.line}`;
+  const v = `${t(l.mode)} ${l.line}`;
   const departure = l.departure + (l.delay || 0) * 1000;
   const mins = Math.round((departure - Date.now()) / 60000);
   if (state.settings.lang === "en") {
@@ -359,7 +418,7 @@ function updateBanner() {
   const l = leg();
   $("nav-instruction").textContent = currentInstruction();
   const etaMs = eta();
-  const parts = [`🏁 ${nav.to?.name || ""}`, `${t("arrive")} ${fmtClock(etaMs)}`, `${fmtMinutes((etaMs - Date.now()) / 1000)} ${t("remaining")}`];
+  const parts = [nav.to?.name || "", `${t("arrive")} ${fmtClock(etaMs)}`, `${fmtMinutes((etaMs - Date.now()) / 1000)} ${t("remaining")}`].filter(Boolean);
   if (l.type === "transit" && l.delay) parts.splice(1, 0, `+${Math.round(l.delay / 60)} min`);
   $("nav-meta").textContent = parts.join(" · ");
   $("nav-arrow").classList.toggle("vehicle", l.type === "transit" && nav.phase === "ride");
@@ -388,7 +447,6 @@ function startSimulation() {
   let legIdx = nav.legIndex;
   let along = 0;
   let waitTicks = 0;
-  $("demo-sim").textContent = t("stopSim");
   simTimer = setInterval(() => {
     if (!nav) return stopSimulation();
     const l = nav.option.legs[legIdx];
@@ -410,11 +468,11 @@ function startSimulation() {
       waitTicks = 0;
     }
   }, 1000);
+  syncSimButton();
 }
 
 function stopSimulation() {
   if (simTimer) clearInterval(simTimer);
   simTimer = null;
-  const btn = $("demo-sim");
-  if (btn) btn.textContent = t("simulate");
+  syncSimButton();
 }

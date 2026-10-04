@@ -3,11 +3,27 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#c2412d" />
+  <meta name="theme-color" content="#ffffff" />
   <meta name="description" content="NOMI – przewodnik AI po Krakowie: rozmowa głosowa, nawigacja pieszo i komunikacją miejską, planer zwiedzania." />
   <title>NOMI – Kraków</title>
+  <!-- Motyw przed pierwszym malowaniem (bez mignięcia jasnego ekranu w trybie nocnym). -->
+  <script>
+    (function () {
+      try {
+        var s = JSON.parse(localStorage.getItem("nomi.settings") || "{}");
+        var t = s.theme || "auto";
+        if (t === "auto") t = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        document.documentElement.dataset.theme = t;
+      } catch (e) {
+        document.documentElement.dataset.theme = "light";
+      }
+    })();
+  </script>
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css" />
   <link rel="stylesheet" href="css/app.css" />
 </head>
@@ -15,17 +31,17 @@
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true">N</span>
-      <div>
+      <div class="brand-text">
         <div class="brand-name">NOMI</div>
         <div class="brand-sub" data-i18n="tagline">Twój przewodnik po Krakowie</div>
       </div>
     </div>
     <div class="status">
-      <button class="pill" id="pill-gps" type="button" title="GPS"><span class="dot"></span><span data-i18n="gps">GPS</span></button>
-      <button class="pill" id="pill-compass" type="button" title="Kompas"><span class="dot"></span><span data-i18n="compass">Kompas</span></button>
-      <button class="icon-btn" id="btn-settings" type="button" aria-label="Ustawienia">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Zm8.2 4.7-.1-1.2 1.9-1.5-2-3.4-2.3.8a8 8 0 0 0-2-1.2L15.3 4h-3.9l-.4 2.7a8 8 0 0 0-2 1.2l-2.3-.8-2 3.4L6.6 12l-.1 1.2-1.9 1.5 2 3.4 2.3-.8c.6.5 1.3.9 2 1.2l.4 2.5h3.9l.4-2.5c.7-.3 1.4-.7 2-1.2l2.3.8 2-3.4-1.7-1.5Z"/></svg>
-      </button>
+      <button class="status-btn" id="pill-gps" type="button" title="GPS" aria-label="GPS"><span data-icon="pin"></span><i class="dot"></i></button>
+      <button class="status-btn" id="pill-compass" type="button" title="Kompas" aria-label="Kompas"><span data-icon="compass"></span><i class="dot"></i></button>
+      <button class="icon-btn" id="btn-lang" type="button" aria-label="Język"></button>
+      <button class="icon-btn" id="btn-theme" type="button" aria-label="Tryb dzienny / nocny"></button>
+      <button class="icon-btn" id="btn-settings" type="button" aria-label="Ustawienia"><span data-icon="sliders"></span></button>
     </div>
   </header>
 
@@ -37,14 +53,11 @@
     <div class="nav-main">
       <div class="nav-instruction" id="nav-instruction">—</div>
       <div class="nav-meta" id="nav-meta"></div>
+      <div class="nav-story hidden" id="nav-story"><span data-icon="book"></span><span id="nav-story-text"></span></div>
     </div>
     <div class="nav-actions">
-      <button class="icon-btn small" id="nav-repeat" type="button" aria-label="Wycisz nawigację">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4Z"/></svg>
-      </button>
-      <button class="icon-btn small danger" id="nav-stop" type="button" aria-label="Zakończ nawigację">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h12v12H6z"/></svg>
-      </button>
+      <button class="icon-btn small" id="nav-repeat" type="button" aria-label="Wycisz nawigację"></button>
+      <button class="icon-btn small" id="nav-stop" type="button" aria-label="Zakończ nawigację"><span data-icon="x"></span></button>
     </div>
   </section>
 
@@ -54,25 +67,22 @@
       <div class="scroll">
         <!-- Kreator: 1) czas, 2) zainteresowania, 3) przycisk. Reszta w „Więcej opcji”. -->
         <form class="card planner-card" id="plan-form">
+          <div class="eyebrow" data-i18n="plannerEyebrow">Planer dnia</div>
           <h2 data-i18n="plannerTitle">Zaplanuj dzień z NOMI</h2>
-          <p class="muted small" data-i18n="plannerLead">Wybierz czas i to, co lubisz – NOMI ułoży trasę z dojściami i dojazdami.</p>
+          <p class="muted" data-i18n="plannerLead">Wybierz czas i to, co lubisz – NOMI ułoży trasę z dojściami i dojazdami.</p>
 
-          <div class="step">
-            <span class="step-n">1</span><span class="label" data-i18n="howLong">Ile masz czasu?</span>
-          </div>
+          <div class="step"><span class="step-n">1</span><span class="label" data-i18n="howLong">Ile masz czasu?</span></div>
           <div class="choice-row" id="plan-hours">
             <button type="button" class="choice" data-value="2"><b>2 h</b><small data-i18n="quickWalk">szybki spacer</small></button>
             <button type="button" class="choice on" data-value="4"><b>4 h</b><small data-i18n="halfDay">pół dnia</small></button>
             <button type="button" class="choice" data-value="8"><b data-i18n="fullDay">Cały dzień</b><small data-i18n="withLunch">z obiadem</small></button>
           </div>
 
-          <div class="step">
-            <span class="step-n">2</span><span class="label" data-i18n="interests">Co lubisz?</span>
-          </div>
+          <div class="step"><span class="step-n">2</span><span class="label" data-i18n="interests">Co lubisz?</span></div>
           <div class="chips multi" id="plan-interests"></div>
 
           <details class="more-options">
-            <summary data-i18n="moreOptions">Więcej opcji</summary>
+            <summary><span data-i18n="moreOptions">Więcej opcji</span><span data-icon="chevronDown"></span></summary>
             <div class="row two">
               <label><span data-i18n="startTime">Start</span><input type="time" id="plan-start-time" required /></label>
               <label><span data-i18n="startFrom">Skąd</span>
@@ -105,13 +115,13 @@
             </label>
           </details>
 
-          <button class="btn primary block big" type="submit" id="plan-submit"><span data-i18n="makePlan">✨ Ułóż plan</span></button>
+          <button class="btn primary block big" type="submit" id="plan-submit"><span data-icon="route"></span><span data-i18n="makePlan">Ułóż plan</span></button>
         </form>
 
         <div id="plan-result"></div>
 
         <details class="discover" id="discover" open>
-          <summary><h3 data-i18n="discover">Odkrywaj w pobliżu</h3></summary>
+          <summary><h3 data-i18n="discover">Odkrywaj w pobliżu</h3><span data-icon="chevronDown"></span></summary>
           <div class="chips small single scroll-x" id="discover-filter"></div>
           <div id="discover-list" class="list"></div>
         </details>
@@ -123,39 +133,37 @@
       <div id="map" aria-label="Mapa Krakowa"></div>
       <div class="map-top">
         <div class="search">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 0 1 5.2 10.4l4.4 4.4-1.4 1.4-4.4-4.4A6.5 6.5 0 1 1 10.5 4Zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Z"/></svg>
+          <span data-icon="search"></span>
           <input id="map-search" type="search" autocomplete="off" data-i18n-placeholder="searchPh" placeholder="Dokąd idziemy?" />
           <ul class="suggestions hidden" id="map-suggestions" role="listbox"></ul>
         </div>
         <div class="chips scroll-x" id="map-chips">
-          <button class="chip" data-action="attractions" type="button">🏛️ <span data-i18n="attractionsChip">Atrakcje</span></button>
-          <button class="chip" data-action="restaurant" type="button">🍽️ <span data-i18n="food">Jedzenie</span></button>
-          <button class="chip" data-action="tourist_info" type="button">ℹ️ <span data-i18n="touristInfo">Informacja turystyczna</span></button>
-          <button class="chip" data-action="toilets" type="button">🚻 <span data-i18n="toilets">Toaleta</span></button>
-          <button class="chip" data-action="ticket_machine" type="button">🎟️ <span data-i18n="ticketMachine">Biletomat</span></button>
-          <button class="chip" data-action="money" type="button">🏧 <span data-i18n="money">Bankomat / kantor</span></button>
-          <button class="chip" data-action="pharmacy" type="button">💊 <span data-i18n="pharmacy">Apteka</span></button>
+          <button class="chip" data-action="attractions" type="button"><span data-icon="landmark"></span><span data-i18n="attractionsChip">Atrakcje</span></button>
+          <button class="chip" data-action="restaurant" type="button"><span data-icon="utensils"></span><span data-i18n="food">Jedzenie</span></button>
+          <button class="chip" data-action="tourist_info" type="button"><span data-icon="info"></span><span data-i18n="touristInfo">Informacja turystyczna</span></button>
+          <button class="chip" data-action="toilets" type="button"><span data-icon="toilet"></span><span data-i18n="toilets">Toaleta</span></button>
+          <button class="chip" data-action="ticket_machine" type="button"><span data-icon="ticket"></span><span data-i18n="ticketMachine">Biletomat</span></button>
+          <button class="chip" data-action="money" type="button"><span data-icon="banknote"></span><span data-i18n="money">Bankomat / kantor</span></button>
+          <button class="chip" data-action="pharmacy" type="button"><span data-icon="pill"></span><span data-i18n="pharmacy">Apteka</span></button>
         </div>
       </div>
       <div class="route-legend hidden" id="route-legend" aria-label="Legenda trasy"></div>
       <div class="map-fabs">
-        <button class="fab" id="btn-locate" type="button" aria-label="Moja lokalizacja">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Zm9 3h-2.1A7 7 0 0 0 13 5.1V3h-2v2.1A7 7 0 0 0 5.1 11H3v2h2.1a7 7 0 0 0 5.9 5.9V21h2v-2.1a7 7 0 0 0 5.9-5.9H21v-2Zm-9 6a5 5 0 1 1 0-10 5 5 0 0 1 0 10Z"/></svg>
-        </button>
+        <button class="fab" id="btn-locate" type="button" aria-label="Moja lokalizacja"><span data-icon="locate"></span></button>
       </div>
       <div class="demo-panel hidden" id="demo-panel">
         <div class="demo-title" data-i18n="demoTitle">Tryb demo</div>
         <div class="demo-hint muted" data-i18n="demoHint">Kliknij mapę, aby ustawić pozycję.</div>
         <div class="demo-row">
-          <button class="icon-btn small" id="demo-left" type="button" aria-label="Obróć w lewo">⟲</button>
+          <button class="icon-btn small" id="demo-left" type="button" aria-label="Obróć w lewo"><span data-icon="rotateCcw"></span></button>
           <span id="demo-heading">0°</span>
-          <button class="icon-btn small" id="demo-right" type="button" aria-label="Obróć w prawo">⟳</button>
-          <button class="btn small" id="demo-sim" type="button" data-i18n="simulate">▶ Symuluj trasę</button>
+          <button class="icon-btn small" id="demo-right" type="button" aria-label="Obróć w prawo"><span data-icon="rotateCw"></span></button>
+          <button class="btn small" id="demo-sim" type="button"></button>
         </div>
       </div>
       <div class="sheet hidden" id="map-sheet">
         <div class="sheet-grip" id="sheet-grip"></div>
-        <button class="icon-btn small sheet-close" id="sheet-close" type="button" aria-label="Zamknij">✕</button>
+        <button class="icon-btn small sheet-close" id="sheet-close" type="button" aria-label="Zamknij"><span data-icon="x"></span></button>
         <div class="sheet-body" id="sheet-body"></div>
       </div>
     </section>
@@ -169,23 +177,19 @@
         <div class="interim" id="interim" data-i18n="listening">Słucham…</div>
       </div>
       <form class="composer" id="composer">
-        <button class="icon-btn" type="button" id="btn-tts" aria-label="Czytanie na głos">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10v4h4l5 5V5L7 10H3Zm13.5 2A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4ZM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6Z"/></svg>
-        </button>
-        <textarea id="chat-input" rows="1" data-i18n-placeholder="askPh" placeholder="Zapytaj NOMI…" enterkeyhint="send"></textarea>
-        <button class="icon-btn mic" type="button" id="btn-mic" aria-label="Mów">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11h-2Z"/></svg>
-        </button>
-        <button class="icon-btn send" type="submit" id="btn-send" aria-label="Wyślij">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20.5 21 12 3 3.5 3 10l12 2-12 2z"/></svg>
-        </button>
+        <div class="composer-box">
+          <button class="icon-btn small" type="button" id="btn-tts" aria-label="Czytanie na głos"><span data-icon="volume"></span></button>
+          <textarea id="chat-input" rows="1" data-i18n-placeholder="askPh" placeholder="Zapytaj NOMI…" enterkeyhint="send"></textarea>
+          <button class="icon-btn small mic" type="button" id="btn-mic" aria-label="Mów"><span data-icon="mic"></span></button>
+          <button class="icon-btn small send" type="submit" id="btn-send" aria-label="Wyślij"><span data-icon="send"></span></button>
+        </div>
       </form>
     </section>
   </main>
 
   <nav class="tabbar" role="tablist">
     <button class="tab" data-tab="planner" role="tab" type="button">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 2v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-2V2h-2v2H9V2H7Zm12 8H5v10h14V10ZM7 12h4v4H7v-4Z"/></svg>
+      <span data-icon="calendar"></span>
       <span data-i18n="tabPlanner">Planer</span>
     </button>
     <button class="tab" data-tab="agent" role="tab" type="button">
@@ -193,14 +197,14 @@
       <span>NOMI</span>
     </button>
     <button class="tab" data-tab="map" role="tab" type="button">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-6-2-6 2v16l6-2 6 2 6-2V3l-6 2Zm-1 13.7-4-1.4V5.3l4 1.4v12Z"/></svg>
+      <span data-icon="map"></span>
       <span data-i18n="tabMap">Mapa</span>
     </button>
   </nav>
 
   <!-- Przypomnienie o bilecie -->
   <dialog class="modal" id="ticket-modal">
-    <div class="modal-icon">🎟️</div>
+    <div class="modal-icon"><span data-icon="ticket"></span></div>
     <h3 id="ticket-title" data-i18n="ticketTitle">Pamiętaj o bilecie</h3>
     <p id="ticket-text"></p>
     <ul class="ticket-how" id="ticket-how"></ul>
@@ -212,23 +216,41 @@
 
   <!-- Ustawienia -->
   <dialog class="modal settings" id="settings-modal">
-    <h3 data-i18n="settings">Ustawienia</h3>
-    <div class="setting">
-      <span data-i18n="language">Język</span>
-      <div class="segmented" id="set-lang">
-        <button type="button" data-value="pl">PL</button>
-        <button type="button" data-value="en">EN</button>
+    <div class="modal-head">
+      <h3 data-i18n="settings">Ustawienia</h3>
+      <button class="icon-btn small" type="button" id="settings-x" aria-label="Zamknij"><span data-icon="x"></span></button>
+    </div>
+    <div class="setting-group">
+      <div class="setting stacked">
+        <span data-i18n="language">Język</span>
+        <div class="segmented flags" id="set-lang">
+          <button type="button" data-value="pl"><span data-flag="pl"></span>Polski</button>
+          <button type="button" data-value="en"><span data-flag="en"></span>English</button>
+        </div>
+      </div>
+      <div class="setting stacked">
+        <span data-i18n="theme">Wygląd</span>
+        <div class="segmented" id="set-theme">
+          <button type="button" data-value="auto"><span data-icon="monitor"></span><span data-i18n="themeAuto">Auto</span></button>
+          <button type="button" data-value="light"><span data-icon="sun"></span><span data-i18n="themeLight">Dzienny</span></button>
+          <button type="button" data-value="dark"><span data-icon="moon"></span><span data-i18n="themeDark">Nocny</span></button>
+        </div>
       </div>
     </div>
-    <label class="setting"><span data-i18n="setVoice">Czytaj odpowiedzi na głos</span><input type="checkbox" id="set-voice" /></label>
-    <label class="setting"><span data-i18n="setNavVoice">Głosowe komunikaty nawigacji</span><input type="checkbox" id="set-navvoice" /></label>
-    <label class="setting"><span data-i18n="setConversation">Tryb rozmowy (słucha po odpowiedzi)</span><input type="checkbox" id="set-conversation" /></label>
-    <label class="setting"><span data-i18n="setNarrate">Opowiadaj o mijanych atrakcjach</span><input type="checkbox" id="set-narrate" /></label>
-    <label class="setting"><span data-i18n="setTickets">Przypomnienia o biletach</span><input type="checkbox" id="set-tickets" /></label>
-    <label class="setting"><span data-i18n="setDemo">Tryb demo (pozycja z mapy)</span><input type="checkbox" id="set-demo" /></label>
-    <div class="setting"><span data-i18n="compassSetting">Kompas</span><button class="btn small" type="button" id="set-compass" data-i18n="enable">Włącz</button></div>
-    <div class="setting"><span data-i18n="conversation">Rozmowa</span><button class="btn small" type="button" id="set-reset" data-i18n="newChat">Nowa rozmowa</button></div>
-    <div class="setting prefs-setting"><div><span data-i18n="prefsTitle">Co NOMI o tobie pamięta</span><small class="muted" id="prefs-list"></small></div><button class="btn small" type="button" id="set-prefs-clear" data-i18n="clear">Wyczyść</button></div>
+    <div class="setting-group">
+      <label class="setting"><span data-i18n="setVoice">Czytaj odpowiedzi na głos</span><input class="switch" type="checkbox" id="set-voice" /></label>
+      <label class="setting"><span data-i18n="setNavVoice">Głosowe komunikaty nawigacji</span><input class="switch" type="checkbox" id="set-navvoice" /></label>
+      <label class="setting"><span data-i18n="setNavStories">Ciekawostki po drodze w nawigacji</span><input class="switch" type="checkbox" id="set-navstories" /></label>
+      <label class="setting"><span data-i18n="setConversation">Tryb rozmowy (słucha po odpowiedzi)</span><input class="switch" type="checkbox" id="set-conversation" /></label>
+      <label class="setting"><span data-i18n="setNarrate">Opowiadaj o mijanych atrakcjach</span><input class="switch" type="checkbox" id="set-narrate" /></label>
+      <label class="setting"><span data-i18n="setTickets">Przypomnienia o biletach</span><input class="switch" type="checkbox" id="set-tickets" /></label>
+      <label class="setting"><span data-i18n="setDemo">Tryb demo (pozycja z mapy)</span><input class="switch" type="checkbox" id="set-demo" /></label>
+    </div>
+    <div class="setting-group">
+      <div class="setting"><span data-i18n="compassSetting">Kompas</span><button class="btn small" type="button" id="set-compass" data-i18n="enable">Włącz</button></div>
+      <div class="setting"><span data-i18n="conversation">Rozmowa</span><button class="btn small" type="button" id="set-reset" data-i18n="newChat">Nowa rozmowa</button></div>
+      <div class="setting prefs-setting"><div><span data-i18n="prefsTitle">Co NOMI o tobie pamięta</span><small class="muted" id="prefs-list"></small></div><button class="btn small" type="button" id="set-prefs-clear" data-i18n="clear">Wyczyść</button></div>
+    </div>
     <p class="muted small" id="server-status"></p>
     <div class="modal-actions"><button class="btn primary" type="button" id="settings-close" data-i18n="close">Zamknij</button></div>
   </dialog>

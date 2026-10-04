@@ -148,8 +148,8 @@ export async function runNarration({ prompt, emit, signal }) {
 }
 
 /** Odpowiedź w formacie JSON zgodnym ze schematem (planer, ekstrakcja danych z oficjalnych stron). */
-export async function runJson({ system = PLANNER_SYSTEM, request, schema, signal }) {
-  const base = baseParams(config.planEffort);
+export async function runJson({ system = PLANNER_SYSTEM, request, schema, signal, effort }) {
+  const base = baseParams(effort || config.planEffort);
   const stream = getClient().beta.messages.stream(
     {
       ...base,

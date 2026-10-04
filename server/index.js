@@ -194,7 +194,7 @@ app.post("/api/narrate", async (req, res) => {
   const sessionId = String(req.body?.sessionId || "").slice(0, 80) || null;
   const { emit, signal } = openSse(req, res);
   try {
-    await narrate({ attraction, ctx, emit, signal, sessionId });
+    await narrate({ attraction, ctx, emit, signal, sessionId, onRoute: Boolean(req.body?.onRoute) });
     emit("done", {});
   } catch (err) {
     if (!signal.aborted) emit("error", { message: describeError(err, ctx.lang) });

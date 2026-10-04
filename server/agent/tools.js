@@ -13,6 +13,7 @@ import { addDays, fmtClock, localYmd } from "../time.js";
 import { nextDepartures } from "../transit/index.js";
 import { PREF_KEYS, hasPosition } from "./context.js";
 import { knowledgeTool, snippetFor } from "./knowledge.js";
+import { sourceLabel } from "../rag/sources.js";
 
 const RYNEK = { lat: 50.0617, lon: 19.9373, name: "Rynek Główny" };
 const TAGS = ["history", "architecture", "art", "museums", "churches", "jewish", "views", "nature", "food", "nightlife", "kids", "ww2", "university"];
@@ -274,6 +275,14 @@ async function originFor(near, ctx) {
 
 const clamp = (v, min, max, def) => (Number.isFinite(v) ? Math.min(Math.max(v, min), max) : def);
 
+const ZTP_SOURCE = { title: "Rozkłady jazdy i opóźnienia na żywo (GTFS ZTP Kraków)", url: "https://ztp.krakow.pl", source: "ZTP Kraków" };
+const OSM_SOURCE = { title: "OpenStreetMap – lokalizacja, rodzaj lokalu, trasy piesze", url: "https://www.openstreetmap.org", source: "OpenStreetMap (dane społecznościowe)" };
+
+/** Oficjalne strony atrakcji jako źródła odpowiedzi (gdy odpowiedź wymienia tę atrakcję). */
+function useOfficial(citations, o, names) {
+  for (const url of o?.sources || []) citations?.use({ title: names[0], url, source: sourceLabel(url), fetched: o.fetched, names });
+}
+
 /** Oficjalne dane atrakcji (strona instytucji + portal krakow.travel); bez nich – jasna informacja, skąd wziąć. */
 function officialFor(a) {
   const o = officialPublic(a.id);
@@ -299,6 +308,7 @@ const handlers = {
       if (!a) return { error: `Nie ma atrakcji o id ${input.attraction_id}` };
       const base = hasPosition(ctx) ? withGeometry(a, ctx.lat, ctx.lon, ctx.heading, lang) : { id: a.id, name: a.name[lang] };
       const official = officialFor(a);
+      useOfficial(citations, officialPublic(a.id), [a.name[lang] || a.name.pl, a.name.pl, a.name.en]);
       // Bez pobranych danych strukturalnych – fragmenty oficjalnych stron tej atrakcji z bazy wiedzy.
       if (!official.official && citations) {
         const urls = officialSourcesFor(a.id);
@@ -322,6 +332,7 @@ const handlers = {
       attractions: list.map((x, i) => {
         if (i >= 3) return x;
         const o = officialPublic(x.id);
+        if (o) useOfficial(citations, o, [x.name]);
         return o ? { ...x, summary: o.summary || x.summary, facts: o.facts, sources: o.sources } : x;
       }),
       note: "Godziny i ceny konkretnej atrakcji: find_attractions z attraction_id.",
@@ -373,13 +384,14 @@ const handlers = {
       heading: Math.round(ctx.heading),
       in_view_curated: curated.map((c) => {
         const o = officialPublic(c.id);
+        if (o) useOfficial(citations, o, [c.name]);
         return o ? { ...c, facts: o.facts, sources: o.sources } : { ...c, facts_unofficial: attractionById.get(c.id)?.facts };
       }),
       in_view_osm: osm,
     };
   },
 
-  async find_places(input, { ctx }) {
+  async find_places(input, { ctx, citations }) {
     const origin = await originFor(input.near, ctx);
     let places;
     try {
@@ -400,6 +412,10 @@ const handlers = {
       };
     }
     const heading = input.near ? null : ctx.heading;
+    for (const p of places) {
+      citations?.use({ ...OSM_SOURCE, names: [p.name] });
+      if (p.website) citations?.use({ title: p.name, url: p.website, source: "strona lokalu", names: [p.name] });
+    }
     return {
       origin: origin.assumed ? "Rynek Główny (brak lokalizacji użytkownika – założenie)" : origin.name,
       source: "OpenStreetMap – lokalizacja i rodzaj lokalu (nie ma oficjalnego rejestru lokali)",
@@ -413,7 +429,7 @@ const handlers = {
     };
   },
 
-  async plan_route(input, { ctx, emit }) {
+  async plan_route(input, { ctx, emit, citations }) {
     let to;
     if (Number.isFinite(input.destination_lat) && Number.isFinite(input.destination_lon)) {
       to = { lat: input.destination_lat, lon: input.destination_lon, name: input.destination };
@@ -435,6 +451,7 @@ const handlers = {
     const departAt = Date.now() + clamp(input.depart_in_minutes, 0, 24 * 60, 0) * 60_000;
     const route = await planRoute({ from, to, mode: input.mode || "auto", departAt, lang: ctx.lang });
     emit("action", { type: "route", route });
+    citations?.use(route.options.some((o) => o.type === "transit") ? ZTP_SOURCE : OSM_SOURCE);
     return {
       destination: to.name,
       shown_on_map: true,
@@ -444,10 +461,11 @@ const handlers = {
     };
   },
 
-  async get_departures(input, { ctx }) {
+  async get_departures(input, { ctx, citations }) {
     if (!input.stop_name && !hasPosition(ctx)) return { error: "Podaj nazwę przystanku – nie znam pozycji użytkownika." };
     const res = await nextDepartures({ lat: ctx.lat, lon: ctx.lon, stopName: input.stop_name, limit: 30 });
     if (res.error) return res;
+    citations?.use(ZTP_SOURCE);
     let deps = res.departures;
     if (input.line) deps = deps.filter((d) => d.line === input.line);
     return {
@@ -466,8 +484,9 @@ const handlers = {
     };
   },
 
-  async get_ticket_info(input, { ctx }) {
+  async get_ticket_info(input, { ctx, citations }) {
     const lang = ctx.lang;
+    citations?.use({ title: "Taryfa biletowa KMK", url: TICKETS.source, source: "ZTP Kraków" });
     const L = (x) => x.label[lang] || x.label.pl;
     return {
       valid_from: TICKETS.validFrom,
@@ -525,9 +544,11 @@ const handlers = {
     }
   },
 
-  async get_weather() {
+  async get_weather(input, { citations }) {
     try {
-      return await getWeather();
+      const w = await getWeather();
+      citations?.use({ title: "Dane synoptyczne i ostrzeżenia meteorologiczne", url: "https://danepubliczne.imgw.pl", source: "IMGW-PIB" });
+      return w;
     } catch (err) {
       return { error: `Dane IMGW są chwilowo niedostępne (${err.message}). Nie zgaduj pogody.` };
     }
@@ -549,7 +570,9 @@ export async function runTool(name, input, toolCtx) {
   if (problem) return { isError: true, content: JSON.stringify({ INVALID_INPUT: problem, received: input }) };
   try {
     const result = await handler(input, toolCtx);
-    return { isError: Boolean(result?.error), content: JSON.stringify(result) };
+    const content = JSON.stringify(result);
+    toolCtx?.onResult?.(name, input, content);
+    return { isError: Boolean(result?.error), content };
   } catch (err) {
     console.warn(`[tool ${name}]`, err.message);
     return { isError: true, content: JSON.stringify({ error: err.message }) };

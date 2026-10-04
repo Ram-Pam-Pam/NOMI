@@ -40,6 +40,8 @@ const DEFAULT_SETTINGS = {
   lang: (navigator.language || "pl").toLowerCase().startsWith("pl") ? "pl" : "en",
   voice: true,
   navVoice: true, // komunikaty głosowe nawigacji (niezależnie od czytania odpowiedzi czatu)
+  navStories: true, // ciekawostki o atrakcjach po drodze w trakcie nawigacji
+  theme: "auto", // auto | light | dark
   conversation: false,
   narrate: true,
   tickets: true,

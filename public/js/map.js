@@ -2,10 +2,12 @@
 // Domyślnie bez znaczników – pojawiają się dopiero na żądanie (przycisk, trasa, plan, wyszukiwanie).
 /* global maplibregl */
 import { getJSON } from "./api.js";
-import { CATEGORY_EMOJI, PLACE_EMOJI, distance, escapeHtml, fmtDistance } from "./format.js";
+import { distance, escapeHtml, fmtDistance } from "./format.js";
 import { t } from "./i18n.js";
+import { CATEGORY_ICON, PLACE_ICON, icon } from "./icons.js";
 import { setDemoPosition } from "./sensors.js";
 import { emit, on, state } from "./state.js";
+import { resolvedTheme } from "./theme.js";
 
 // Wektorowe mapy OpenFreeMap (bez klucza API); przy braku dostępu – rastrowe kafelki OSM.
 const STYLES = {
@@ -50,10 +52,9 @@ export function getMap() {
 }
 
 export function initMap() {
-  const dark = matchMedia("(prefers-color-scheme: dark)").matches;
   map = new maplibregl.Map({
     container: "map",
-    style: dark ? STYLES.dark : STYLES.light,
+    style: STYLES[resolvedTheme()],
     center: lngLat(KRAKOW.lat, KRAKOW.lon),
     zoom: 14.5,
     // Tylko 2D: bez pochylania i obracania mapy.
@@ -104,6 +105,12 @@ export function initMap() {
 
   on("position", updateUser);
   on("heading", updateHeading);
+  // Tryb dzienny/nocny: zmiana stylu mapy; warstwy aplikacji wracają po załadowaniu stylu (style.load).
+  on("theme", (theme) => {
+    if (usedFallback || !map) return;
+    styleReady = false;
+    map.setStyle(STYLES[theme] || STYLES.light);
+  });
   loadAttractions();
 }
 
@@ -127,16 +134,18 @@ function addOverlays() {
   for (const id of ["nomi-accuracy", "nomi-fov", "nomi-plan", "nomi-plan-stops", "nomi-route", "nomi-route-stops"]) {
     if (!map.getSource(id)) map.addSource(id, { type: "geojson", data: sourceData[id] || EMPTY });
   }
-  map.addLayer({ id: "nomi-accuracy", type: "fill", source: "nomi-accuracy", paint: { "fill-color": "#2563eb", "fill-opacity": 0.07 } });
-  map.addLayer({ id: "nomi-fov-fill", type: "fill", source: "nomi-fov", paint: { "fill-color": "#2563eb", "fill-opacity": 0.1 } });
+  const user = getCss("--user", "#2563eb");
+  map.addLayer({ id: "nomi-accuracy", type: "fill", source: "nomi-accuracy", paint: { "fill-color": user, "fill-opacity": 0.07 } });
+  map.addLayer({ id: "nomi-fov-fill", type: "fill", source: "nomi-fov", paint: { "fill-color": user, "fill-opacity": 0.1 } });
   map.addLayer({
     id: "nomi-fov-line",
     type: "line",
     source: "nomi-fov",
-    paint: { "line-color": "#2563eb", "line-opacity": 0.6, "line-width": 1.5, "line-dasharray": [3, 3] },
+    paint: { "line-color": getCss("--user", "#2563eb"), "line-opacity": 0.6, "line-width": 1.5, "line-dasharray": [3, 3] },
   });
   addRouteLayers("plan");
   addRouteLayers("route");
+  for (const [prefix, [active, mode]] of Object.entries(legOpacity)) setLegOpacity(prefix, active, mode);
   if (!stopClicksBound) {
     stopClicksBound = true; // zdarzenia warstw przeżywają zmianę stylu – rejestrujemy raz
     map.on("click", "plan-stops", stopPopup);
@@ -154,10 +163,11 @@ function addRouteLayers(prefix) {
     type: "line",
     source,
     layout: round,
-    paint: { "line-color": "#ffffff", "line-width": ["match", ["get", "mode"], "walk", 9, 11], "line-opacity": 0.95 },
+    paint: { "line-color": getCss("--surface", "#ffffff"), "line-width": ["match", ["get", "mode"], "walk", 9, 11], "line-opacity": 0.95 },
   });
   // pieszo: kropki – obrazek kropki powtarzany wzdłuż linii (kreski o zerowej długości renderują się błędnie)
-  if (!map.hasImage("nomi-walk-dot")) map.addImage("nomi-walk-dot", dotImage(c.walk), { pixelRatio: 2 });
+  if (map.hasImage("nomi-walk-dot")) map.removeImage("nomi-walk-dot");
+  map.addImage("nomi-walk-dot", dotImage(c.walk), { pixelRatio: 2 });
   map.addLayer({
     id: `${prefix}-walk`,
     type: "symbol",
@@ -188,7 +198,7 @@ function addRouteLayers(prefix) {
     source: `${source}-stops`,
     paint: {
       "circle-radius": 4,
-      "circle-color": "#ffffff",
+      "circle-color": getCss("--surface", "#ffffff"),
       "circle-stroke-width": 2,
       "circle-stroke-color": ["match", ["get", "mode"], "tram", c.tram, c.bus],
     },
@@ -213,8 +223,11 @@ function stopPopup(e) {
   if (f) openPopup(e.lngLat.lat, e.lngLat.lng, `<div class="popup"><h4>${escapeHtml(f.properties.name)}</h4></div>`, 8);
 }
 
+const legOpacity = {};
+
 /** Przyciemnienie odcinków: active = indeks odcinka wyróżnionego; mode „progress” – przebyte przygaszone. */
 function setLegOpacity(prefix, active, mode = "progress") {
+  legOpacity[prefix] = [active, mode];
   whenReady(() => {
     const expr =
       active === null || active === undefined
@@ -262,14 +275,15 @@ function el(html, className = "") {
   return div;
 }
 
-const poiEl = (emoji, cls = "") => el(`<div class="poi-marker ${cls}"><span>${emoji}</span></div>`, "poi-wrap");
+/** Pinezka z ikoną (albo numerem punktu planu). */
+const poiEl = (content, cls = "") => el(`<div class="poi-marker ${cls}"><span>${content}</span></div>`, "poi-wrap");
 
 function actionButtons(p, { narrate = false, plan = true } = {}) {
   const data = `data-lat="${p.lat}" data-lon="${p.lon}" data-name="${escapeHtml(p.name)}" data-id="${escapeHtml(p.id || "")}"`;
   return `<div class="actions">
-    <button class="btn small primary" data-act="navigate" ${data}>🧭 ${t("navigate")}</button>
-    ${narrate ? `<button class="btn small" data-act="narrate" ${data}>🔊 ${t("tellMe")}</button>` : ""}
-    ${plan ? `<button class="btn small" data-act="plan" ${data}>＋ ${t("addToPlan")}</button>` : ""}
+    <button class="btn small primary" data-act="navigate" ${data}>${icon("navigation")}${t("navigate")}</button>
+    ${narrate ? `<button class="btn small" data-act="narrate" ${data}>${icon("volume")}${t("tellMe")}</button>` : ""}
+    ${plan ? `<button class="btn small" data-act="plan" ${data}>${icon("plus")}${t("addToPlan")}</button>` : ""}
   </div>`;
 }
 
@@ -383,7 +397,7 @@ export async function loadAttractions() {
 function renderAttractions() {
   clearMarkers("attractions");
   for (const a of attractions) {
-    addMarker("attractions", poiEl(CATEGORY_EMOJI[a.category] || "📍", "attr"), a.lat, a.lon, {
+    addMarker("attractions", poiEl(icon(CATEGORY_ICON[a.category] || "pin"), "attr"), a.lat, a.lon, {
       anchor: "bottom",
       title: a.name,
       popupOffset: 40,
@@ -417,7 +431,7 @@ export function showPlaces(places, type = "restaurant", { fit = true } = {}) {
   clearMarkers("places");
   for (const p of places) {
     const details = [p.cuisine, p.address, p.openingHours ? `${t("osmHours")}: ${p.openingHours}` : null, p.note].filter(Boolean);
-    addMarker("places", poiEl(PLACE_EMOJI[p.type || type] || "📍", "place"), p.lat, p.lon, {
+    addMarker("places", poiEl(icon(PLACE_ICON[p.type || type] || "pin"), "place"), p.lat, p.lon, {
       anchor: "bottom",
       title: p.name,
       popupOffset: 40,
@@ -436,7 +450,7 @@ export function showPlaces(places, type = "restaurant", { fit = true } = {}) {
 
 export function showPoint(p) {
   clearMarkers("search");
-  addMarker("search", poiEl("📌", "place"), p.lat, p.lon, {
+  addMarker("search", poiEl(icon("pin"), "place"), p.lat, p.lon, {
     anchor: "bottom",
     popupOffset: 40,
     popupHtml: `<div class="popup"><h4>${escapeHtml(p.name)}</h4>${p.address ? `<p class="muted small">${escapeHtml(p.address)}</p>` : ""}${actionButtons(p)}</div>`,
@@ -478,12 +492,12 @@ function addTransitMarkers(group, leg) {
   const geom = leg.geometry || [];
   if (geom.length) {
     const [lat, lon] = geom[Math.floor(geom.length / 2)];
-    addMarker(group, el(`${mode === "tram" ? "🚋" : "🚌"} ${escapeHtml(leg.line)}`, `line-badge ${mode}`), lat, lon);
+    addMarker(group, el(`${icon(mode)}${escapeHtml(leg.line)}`, `line-badge ${mode}`), lat, lon);
   }
-  addMarker(group, el(mode === "tram" ? "🚋" : "🚌", `route-stop ${mode} board`), leg.from.lat, leg.from.lon, {
-    title: `▶ ${leg.from.name}${leg.from.platform ? ` (${leg.from.platform})` : ""} · ${leg.line} → ${leg.headsign}`,
+  addMarker(group, el(icon(mode), `route-stop ${mode} board`), leg.from.lat, leg.from.lon, {
+    title: `${leg.from.name}${leg.from.platform ? ` (${leg.from.platform})` : ""} · ${leg.line} → ${leg.headsign}`,
   });
-  addMarker(group, el("", `route-stop ${mode} alight`), leg.to.lat, leg.to.lon, { title: `■ ${leg.to.name}` });
+  addMarker(group, el("", `route-stop ${mode} alight`), leg.to.lat, leg.to.lon, { title: leg.to.name });
 }
 
 function showLegend(modes) {
@@ -525,7 +539,7 @@ export function showRoute(option, { fit = true } = {}) {
   const first = option.legs[0];
   const last = option.legs[option.legs.length - 1];
   if (first?.from) addMarker("route", el("", "route-stop walk start"), first.from.lat, first.from.lon);
-  if (last?.to) addMarker("route", poiEl("🏁", "place"), last.to.lat, last.to.lon, { anchor: "bottom" });
+  if (last?.to) addMarker("route", poiEl(icon("flag"), "dest"), last.to.lat, last.to.lon, { anchor: "bottom", title: last.to.name });
   refreshLegend();
   map.getContainer().classList.add("route-active"); // przygaś atrakcje, by nie zasłaniały trasy
   if (fit) fitPoints(option.legs.flatMap((l) => l.geometry || []));

@@ -2,6 +2,7 @@
 import { initAgent, refreshAgentTexts, resetChat } from "./agent.js";
 import { getJSON } from "./api.js";
 import { applyI18n, t } from "./i18n.js";
+import { flag, icon } from "./icons.js";
 import { initMap, invalidate, loadAttractions, locate } from "./map.js";
 import { initMapUi } from "./mapui.js";
 import { initNavigation } from "./navigation.js";
@@ -9,8 +10,9 @@ import { initPlanner, refreshPlannerTexts } from "./planner.js";
 import { initProximity } from "./proximity.js";
 import { compassNeedsPermission, enableCompass, setDemoPosition, startGeolocation } from "./sensors.js";
 import { on, saveSettings, setPref, state, store } from "./state.js";
+import { initTheme, resolvedTheme } from "./theme.js";
 import { initTickets } from "./tickets.js";
-import { toast } from "./ui.js";
+import { hydrateIcons, toast } from "./ui.js";
 import { stopSpeaking, unlockSpeech } from "./voice.js";
 
 const $ = (id) => document.getElementById(id);
@@ -52,6 +54,28 @@ async function requestCompass() {
   if (!ok) toast(state.compassStatus === "denied" ? t("compassDenied") : t("compassUnsupported"));
 }
 
+// ------------------------------------------------ język i motyw w górnym pasku
+
+function renderHeaderButtons() {
+  const lang = state.settings.lang;
+  const langBtn = $("btn-lang");
+  langBtn.innerHTML = flag(lang);
+  langBtn.title = t("switchLang");
+  langBtn.setAttribute("aria-label", t("switchLang"));
+  const dark = resolvedTheme() === "dark";
+  const themeBtn = $("btn-theme");
+  themeBtn.innerHTML = icon(dark ? "sun" : "moon");
+  themeBtn.title = dark ? t("toLight") : t("toDark");
+  themeBtn.setAttribute("aria-label", themeBtn.title);
+}
+
+function initHeaderButtons() {
+  $("btn-lang").addEventListener("click", () => saveSettings({ lang: state.settings.lang === "pl" ? "en" : "pl" }));
+  $("btn-theme").addEventListener("click", () => saveSettings({ theme: resolvedTheme() === "dark" ? "light" : "dark" }));
+  on("theme", renderHeaderButtons);
+  renderHeaderButtons();
+}
+
 // ------------------------------------------------ ustawienia
 
 function renderPrefs() {
@@ -65,11 +89,13 @@ function syncSettingsUi() {
   const s = state.settings;
   $("set-voice").checked = s.voice;
   $("set-navvoice").checked = s.navVoice;
+  $("set-navstories").checked = s.navStories;
   $("set-conversation").checked = s.conversation;
   $("set-narrate").checked = s.narrate;
   $("set-tickets").checked = s.tickets;
   $("set-demo").checked = s.demo;
   $("set-lang").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.value === s.lang));
+  $("set-theme").querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.value === (s.theme || "auto")));
   $("demo-panel").classList.toggle("hidden", !s.demo);
 }
 
@@ -92,9 +118,13 @@ function initSettings() {
     }
   });
   $("settings-close").addEventListener("click", () => dlg.close());
+  $("settings-x").addEventListener("click", () => dlg.close());
+  // Kliknięcie w tło zamyka okno.
+  dlg.addEventListener("click", (e) => e.target === dlg && dlg.close());
   const bind = (id, key) => $(id).addEventListener("change", (e) => saveSettings({ [key]: e.target.checked }));
   bind("set-voice", "voice");
   bind("set-navvoice", "navVoice");
+  bind("set-navstories", "navStories");
   bind("set-conversation", "conversation");
   bind("set-narrate", "narrate");
   bind("set-tickets", "tickets");
@@ -107,6 +137,10 @@ function initSettings() {
   $("set-lang").addEventListener("click", (e) => {
     const b = e.target.closest("button");
     if (b) saveSettings({ lang: b.dataset.value });
+  });
+  $("set-theme").addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (b) saveSettings({ theme: b.dataset.value });
   });
   $("set-compass").addEventListener("click", requestCompass);
   $("set-prefs-clear").addEventListener("click", () => {
@@ -123,6 +157,7 @@ function initSettings() {
   on("settings", (s) => {
     syncSettingsUi();
     if (!s.voice) stopSpeaking();
+    renderHeaderButtons();
     if (s.lang !== lang) {
       lang = s.lang;
       applyI18n();
@@ -138,7 +173,10 @@ function initSettings() {
 function init() {
   // ?demo – tryb demo (pozycja z mapy), np. do prezentacji na komputerze.
   if (new URLSearchParams(location.search).has("demo") && !state.settings.demo) state.settings.demo = true;
+  initTheme();
   applyI18n();
+  hydrateIcons();
+  initHeaderButtons();
   initMap();
   initMapUi();
   initNavigation();

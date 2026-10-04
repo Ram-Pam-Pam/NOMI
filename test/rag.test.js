@@ -120,3 +120,32 @@ test("wskazówki tury: język wiadomości i wypowiedzi o sobie do zapamiętania"
   // Preferencja już zapisana – bez ponownej podpowiedzi.
   assert.doesNotMatch(buildContextBlock({ ...ctx, prefHint: "diet" }), /remember_preference/);
 });
+
+test("sprzątanie odpowiedzi: znaczniki, wymyślone etykiety, emoji; które odpowiedzi sprawdzać", async () => {
+  const { cleanAnswer, needsVerification } = await import("../server/agent/verify.js");
+  const raw = "<think>hmm</think>Barbakan to perła [K2] 🏰 i ma 3 bramy [C2]. Wejście [K9].\n\n\n<tool_call>{}</tool_call>Koniec.";
+  assert.equal(cleanAnswer(raw, { maxLabel: 5 }), "Barbakan to perła [K2] i ma 3 bramy. Wejście.\n\nKoniec.");
+  assert.equal(needsVerification("Jasne, już szukam!"), false);
+  assert.equal(needsVerification("Bilet kosztuje 22 zł."), true);
+  assert.equal(needsVerification("Barbakan to jedna z najlepiej zachowanych budowli obronnych w Europie."), true);
+});
+
+test("źródła narzędzi na liście tylko, gdy odpowiedź mówi o danym obiekcie", async () => {
+  const { Citations } = await import("../server/agent/knowledge.js");
+  const c = new Citations({});
+  c.use({ title: "Barbakan", url: "https://muzeumkrakowa.pl/oddzialy/barbakan", source: "Muzeum Krakowa", names: ["Barbakan"] });
+  c.use({ title: "Kościół Mariacki", url: "https://mariacki.com", source: "mariacki.com", names: ["Kościół Mariacki"] });
+  c.use({ title: "Taryfa", url: "https://ztp.krakow.pl/taryfa", source: "ZTP Kraków" });
+  const urls = c.cited("Do Barbakanu wejdziesz za 22 zł, a bilet 20-minutowy kosztuje 4 zł.").map((s) => s.url);
+  assert.deepEqual(urls, ["https://muzeumkrakowa.pl/oddzialy/barbakan", "https://ztp.krakow.pl/taryfa"]);
+  assert.ok(c.cited("W Kościele Mariackim jest ołtarz.").some((s) => s.url === "https://mariacki.com"), "odmiana nazwy");
+});
+
+test("ciekawostka po drodze bez pytania na końcu; etykiety w nietypowej postaci", async () => {
+  process.env.NOMI_SKIP_DOTENV = "1";
+  const { dropTrailingQuestion } = await import("../server/agent/nomi.js");
+  const { cleanAnswer } = await import("../server/agent/verify.js");
+  assert.equal(dropTrailingQuestion("Przed tobą Barbakan. Wstęp 22 zł. Chcesz więcej?"), "Przed tobą Barbakan. Wstęp 22 zł.");
+  assert.equal(dropTrailingQuestion("Czy wiesz, że to najstarszy kopiec?"), "Czy wiesz, że to najstarszy kopiec?");
+  assert.equal(cleanAnswer("Otwarte do 18:00 [ K1 ]. Bilety 22 zł【K2】 i [K 3 , K4]."), "Otwarte do 18:00 [K1]. Bilety 22 zł[K2] i [K3, K4].");
+});

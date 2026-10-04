@@ -1,7 +1,8 @@
 // Interfejs zakładki Mapa: wyszukiwarka, szybkie akcje, wysuwany panel z trasami i miejscami.
 import { getJSON } from "./api.js";
-import { MODE_EMOJI, PLACE_EMOJI, escapeHtml, fmtClock, fmtDistance, fmtMinutes } from "./format.js";
+import { escapeHtml, fmtClock, fmtDistance, fmtMinutes } from "./format.js";
 import { t } from "./i18n.js";
+import { PLACE_ICON, icon } from "./icons.js";
 import { clearRoute, clearTransientMarkers, fitPoints, flyTo, locate, showPlaces, showPoint, showRoute, toggleAttractions } from "./map.js";
 import { rotateDemoHeading } from "./sensors.js";
 import { emit, on, state } from "./state.js";
@@ -127,7 +128,7 @@ function initSearch() {
   const render = () => {
     list.innerHTML = results
       .map(
-        (r, i) => `<li role="option" data-i="${i}"><span>${r.type === "attraction" ? "⭐" : r.type === "stop" ? "🚏" : "📍"}</span>
+        (r, i) => `<li role="option" data-i="${i}"><span class="ic">${icon(r.type === "attraction" ? "star" : r.type === "stop" ? "busStop" : "pin")}</span>
           <div><div>${escapeHtml(state.settings.lang === "en" && r.nameEn ? r.nameEn : r.name)}</div>${r.address ? `<div class="sub">${escapeHtml(r.address)}</div>` : ""}</div></li>`,
       )
       .join("");
@@ -189,7 +190,7 @@ export async function requestRoute({ to, mode = "auto" }) {
     return;
   }
   current = { to, mode, route: null, selected: 0 };
-  openSheet(`<h3>🏁 ${escapeHtml(to.name || "")}</h3><div class="empty">${t("routeLoading")}</div>`);
+  openSheet(`<h3>${icon("flag")}${escapeHtml(to.name || "")}</h3><div class="empty"><span class="spinner"></span></div>`);
   try {
     const route = await getJSON("/api/route", {
       fromlat: state.position.lat,
@@ -203,7 +204,7 @@ export async function requestRoute({ to, mode = "auto" }) {
     if (current?.to !== to) return; // użytkownik wybrał już inny cel
     presentRoute(route, { mode });
   } catch (err) {
-    openSheet(`<h3>🏁 ${escapeHtml(to.name || "")}</h3><div class="empty">${t("noRoute")} ${escapeHtml(err.message)}</div>`);
+    openSheet(`<h3>${icon("flag")}${escapeHtml(to.name || "")}</h3><div class="empty">${t("noRoute")} ${escapeHtml(err.message)}</div>`);
   }
 }
 
@@ -219,10 +220,10 @@ function legsLine(o) {
   return o.legs
     .map((l) =>
       l.type === "walk"
-        ? `<span class="leg-badge walk">🚶 ${Math.max(1, Math.round(l.duration / 60))}</span>`
-        : `<span class="leg-badge ${l.mode}">${MODE_EMOJI[l.mode]} ${escapeHtml(l.line)}</span>`,
+        ? `<span class="leg-badge walk">${icon("walk")}${Math.max(1, Math.round(l.duration / 60))}</span>`
+        : `<span class="leg-badge ${l.mode}">${icon(l.mode)}${escapeHtml(l.line)}</span>`,
     )
-    .join('<span class="sep">›</span>');
+    .join(`<span class="sep">${icon("chevronRight")}</span>`);
 }
 
 function delayBadge(delay) {
@@ -233,11 +234,11 @@ function delayBadge(delay) {
 
 function legDetail(l) {
   if (l.type === "walk") {
-    return `<div class="leg-row"><div class="t">${fmtClock(l.departure)}</div><div>🚶 ${t("walkTo")} <b>${escapeHtml(l.to.name || "")}</b> · ${fmtMinutes(l.duration)}${l.distance ? ` · ${fmtDistance(l.distance)}` : ""}</div></div>`;
+    return `<div class="leg-row"><div class="t">${fmtClock(l.departure)}</div><div><span class="walk-line">${icon("walk")}${t("walkTo")}</span> <b>${escapeHtml(l.to.name || "")}</b> · ${fmtMinutes(l.duration)}${l.distance ? ` · ${fmtDistance(l.distance)}` : ""}</div></div>`;
   }
   return `<div class="leg-row"><div class="t">${fmtClock(l.departure)}</div><div>
-    <span class="leg-badge ${l.mode}">${MODE_EMOJI[l.mode]} ${escapeHtml(l.line)}</span> ${t("direction")} <b>${escapeHtml(l.headsign)}</b> ${delayBadge(l.delay)}<br/>
-    <span class="muted">▶ ${escapeHtml(l.from.name)}${l.from.platform ? ` (${escapeHtml(l.from.platform)})` : ""} → ${t("getOff")}: <b>${escapeHtml(l.to.name)}</b> ${fmtClock(l.arrival)} · ${l.stops.length - 1} ${t("stopsCount")}</span>
+    <span class="leg-badge ${l.mode}">${icon(l.mode)}${escapeHtml(l.line)}</span> ${t("direction")} <b>${escapeHtml(l.headsign)}</b> ${delayBadge(l.delay)}<br/>
+    <span class="muted">${escapeHtml(l.from.name)}${l.from.platform ? ` (${escapeHtml(l.from.platform)})` : ""} → ${t("getOff")}: <b>${escapeHtml(l.to.name)}</b> ${fmtClock(l.arrival)} · ${l.stops.length - 1} ${t("stopsCount")}</span>
   </div></div>`;
 }
 
@@ -250,9 +251,9 @@ function renderRouteSheet() {
   ];
   openSheet(`
     <div class="route-sheet" id="route-sheet">
-      <h3>🏁 ${escapeHtml(route.to.name || "")}</h3>
+      <h3>${icon("flag")}${escapeHtml(route.to.name || "")}</h3>
       <div class="segmented">${modes.map(([m, label]) => `<button type="button" data-sheet="mode" data-mode="${m}" class="${current.mode === m ? "on" : ""}">${label}</button>`).join("")}</div>
-      ${route.warning ? `<p class="muted small">⚠ ${escapeHtml(route.warning)}</p>` : ""}
+      ${route.warning ? `<p class="muted small warning-line">${icon("alert")}${escapeHtml(route.warning)}</p>` : ""}
       <div class="opts">
         ${route.options
           .map(
@@ -260,15 +261,15 @@ function renderRouteSheet() {
               <button type="button" class="route-opt" data-sheet="option" data-index="${idx}">
                 <div class="top"><span class="dur">${fmtMinutes(opt.duration)}</span><span class="times">${fmtClock(opt.departure)} – ${fmtClock(opt.arrival)}</span></div>
                 <div class="legs-line">${legsLine(opt)}</div>
-                ${opt.ticket ? `<div class="ticket-line">🎟️ ${escapeHtml(opt.ticket.label)} – ${opt.ticket.price} zł</div>` : ""}
+                ${opt.ticket ? `<div class="ticket-line">${icon("ticket")}${escapeHtml(opt.ticket.label)} – ${opt.ticket.price} zł</div>` : ""}
               </button></div></div>`,
           )
           .join("")}
       </div>
-      ${route.options.length > 1 ? `<button type="button" class="link-btn more-opts" data-sheet="expand">↕ ${t("otherOptions")} (${route.options.length - 1})</button>` : ""}
+      ${route.options.length > 1 ? `<button type="button" class="link-btn more-opts" data-sheet="expand">${icon("chevronDown")}${t("otherOptions")} (${route.options.length - 1})</button>` : ""}
       <div class="collapsible closed" id="route-details"><div class="collapsible-inner"><div class="leg-detail"></div></div></div>
       <div class="sheet-actions">
-        <button class="btn primary block" type="button" data-sheet="start">▶ ${t("startNav")}</button>
+        <button class="btn primary block big" type="button" data-sheet="start">${icon("navigation")}${t("startNav")}</button>
       </div>
     </div>`);
 }
@@ -308,7 +309,7 @@ const NEAR_RADIUS = { restaurant: 500, tourist_info: 2000, toilets: 1200, ticket
 export async function showNearbyPlaces(type, center = state.position) {
   emit("show-tab", "map");
   if (!center) return toast(t("noGps"));
-  openSheet(`<h3>${PLACE_EMOJI[type] || "📍"} ${t("placesTitle")}</h3><div class="empty">…</div>`);
+  openSheet(`<h3>${icon(PLACE_ICON[type] || "pin")}${t("placesTitle")}</h3><div class="empty"><span class="spinner"></span></div>`);
   try {
     const places = await getJSON("/api/places", { type, lat: center.lat, lon: center.lon, radius: NEAR_RADIUS[type] ?? 600, limit: 25 });
     showPlaces(places, type);
@@ -322,16 +323,16 @@ export function renderPlaceList(places, type = "restaurant", title = t("placesTi
   const rows = places
     .map(
       (p) => `<div class="item">
-        <div class="emoji">${PLACE_EMOJI[p.type || type] || "📍"}</div>
+        <div class="ico">${icon(PLACE_ICON[p.type || type] || "pin")}</div>
         <div><h4>${escapeHtml(p.name)}</h4>
           <div class="meta">${[p.distance != null ? fmtDistance(p.distance) : null, p.kind, p.cuisine, p.openingHours ? `${t("osmHours")}: ${p.openingHours}` : null].filter(Boolean).map(escapeHtml).join(" · ")}</div>
           ${p.note ? `<p>${escapeHtml(p.note)}</p>` : ""}
           <div class="actions">
-            <button class="btn small primary" data-sheet="navigate" data-lat="${p.lat}" data-lon="${p.lon}" data-name="${escapeHtml(p.name)}">🧭 ${t("navigate")}</button>
-            <button class="btn small" data-sheet="focus" data-lat="${p.lat}" data-lon="${p.lon}">📍</button>
-            ${p.website ? `<a class="btn small" href="${escapeHtml(p.website)}" target="_blank" rel="noopener">www</a>` : ""}
+            <button class="btn small primary" data-sheet="navigate" data-lat="${p.lat}" data-lon="${p.lon}" data-name="${escapeHtml(p.name)}">${icon("navigation")}${t("navigate")}</button>
+            <button class="btn small icon-only" data-sheet="focus" data-lat="${p.lat}" data-lon="${p.lon}" aria-label="${t("showOnMap")}" title="${t("showOnMap")}">${icon("pin")}</button>
+            ${p.website ? `<a class="btn small" href="${escapeHtml(p.website)}" target="_blank" rel="noopener">${icon("external")}www</a>` : ""}
           </div></div></div>`,
     )
     .join("");
-  openSheet(`<h3>${PLACE_EMOJI[type] || "📍"} ${escapeHtml(title)}</h3><div class="list">${rows || `<div class="empty">${t("noPlaces")}</div>`}</div>`);
+  openSheet(`<h3>${icon(PLACE_ICON[type] || "pin")}${escapeHtml(title)}</h3><div class="list">${rows || `<div class="empty">${t("noPlaces")}</div>`}</div>`);
 }

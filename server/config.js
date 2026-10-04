@@ -37,6 +37,14 @@ export const config = {
     planReasoningEffort: env.NOMI_PLAN_REASONING_EFFORT || "medium",
   },
 
+  // Sprawdzanie każdej odpowiedzi NOMI w dowodach z oficjalnych źródeł (NOMI_VERIFY=off – wyłączone).
+  // Getter: czytane przy każdym wywołaniu (testy przełączają je w locie).
+  get verify() {
+    return env.NOMI_VERIFY !== "off";
+  },
+  // Staranność sprawdzania: medium wyłapuje przeniesione fakty (np. data z innego zdarzenia), low – szybsze.
+  verifyEffort: env.NOMI_VERIFY_EFFORT || "medium",
+
   // Baza wiedzy (RAG) z oficjalnych źródeł: model embeddingów (Sherlock) i co ile dni odświeżać.
   rag: {
     embedModel: env.RAG_EMBED_MODEL || "BAAI/bge-multilingual-gemma2",
